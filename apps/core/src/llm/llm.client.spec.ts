@@ -8,6 +8,7 @@ const baseConfig: CoreConfig = {
   llmTimeoutMs: 1000,
   systemPrompt: 'sys',
   maxHistory: 50,
+  dbPath: ':memory:',
 };
 
 function clientWith(overrides: Partial<CoreConfig> = {}): LlmClient {

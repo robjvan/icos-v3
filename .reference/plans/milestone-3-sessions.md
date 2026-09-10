@@ -1,6 +1,6 @@
 # Milestone 3 — Persistent Session Store + FTS5
 
-Status: planned
+Status: implemented (2026-09-10) — 45 unit + 11 e2e green; live restart test vs Ollama/gemma passed, see evidence/milestone-3-evidence-sessions.md.
 Scope: `apps/core/` only. No changes to epistemic memory, Sentinel, tools, plugins, or model-provider architecture.
 
 ## 1. Goal
@@ -739,19 +739,19 @@ Epistemic Memory will eventually interpret what happened.
 
 # 18. Execution order
 
-1. [ ] Add SQLite dependency and configuration.
-2. [ ] Create database initialization/schema.
-3. [ ] Implement `sessions` and `messages`.
-4. [ ] Implement FTS5 index.
-5. [ ] Replace Map-backed `SessionStore`.
-6. [ ] Verify existing conversation endpoint still works.
-7. [ ] Verify streaming still works.
-8. [ ] Add session listing endpoint.
-9. [ ] Add session search endpoint.
-10. [ ] Add restart persistence tests.
-11. [ ] Update minimal frontend to browse/reopen sessions.
-12. [ ] Run complete test suite.
-13. [ ] Perform manual restart test with a real model.
+1. [x] Add SQLite dependency and configuration.
+2. [x] Create database initialization/schema.
+3. [x] Implement `sessions` and `messages`.
+4. [x] Implement FTS5 index.
+5. [x] Replace Map-backed `SessionStore`.
+6. [x] Verify existing conversation endpoint still works.
+7. [x] Verify streaming still works.
+8. [x] Add session listing endpoint.
+9. [x] Add session search endpoint.
+10. [x] Add restart persistence tests.
+11. [x] Update minimal frontend to browse/reopen sessions.
+12. [x] Run complete test suite.
+13. [x] Perform manual restart test with a real model.
 
 ---
 

@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   GatewayTimeoutException,
   Inject,
   Injectable,
@@ -9,6 +10,8 @@ import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
 import { LlmClient, LlmError } from '../llm/llm.client';
 import type { ChatMessage } from '../llm/llm.client';
+import { InvalidSearchQueryError } from '../session/session.repository';
+import type { SessionSearchResult } from '../session/session.repository';
 import { buildContext } from './context.builder';
 import { SessionStore } from './session.store';
 
@@ -30,8 +33,8 @@ export class ConversationService {
     message: string,
     sessionId?: string,
   ): Promise<{ sessionId: string; reply: string; model: string }> {
-    const { id } = this.sessions.resolve(sessionId);
-    const history = this.sessions.get(id) ?? [];
+    const { id } = await this.sessions.resolve(sessionId);
+    const history = await this.sessions.getContextMessages(id);
     const messages = this.prepareMessages(history, message);
 
     // TODO(core.md): sentinel.evaluate goes here — assess the model
@@ -42,8 +45,8 @@ export class ConversationService {
 
     try {
       const { content, model } = await this.llm.chat(messages);
-      this.sessions.append(id, { role: 'user', content: message });
-      this.sessions.append(id, { role: 'assistant', content });
+      await this.sessions.append(id, { role: 'user', content: message });
+      await this.sessions.append(id, { role: 'assistant', content });
       return { sessionId: id, reply: content, model };
     } catch (err) {
       if (err instanceof LlmError) {
@@ -56,11 +59,11 @@ export class ConversationService {
     }
   }
 
-  history(sessionId: string): {
+  async history(sessionId: string): Promise<{
     sessionId: string;
     messages: ChatMessage[];
-  } {
-    const messages = this.sessions.get(sessionId);
+  }> {
+    const messages = await this.sessions.getHistory(sessionId);
     if (!messages) {
       throw new NotFoundException(`Unknown session "${sessionId}"`);
     }
@@ -77,8 +80,8 @@ export class ConversationService {
     emit: (event: ConversationStreamEvent) => void,
     clientSignal?: AbortSignal,
   ): Promise<void> {
-    const { id } = this.sessions.resolve(sessionId);
-    const history = this.sessions.get(id) ?? [];
+    const { id } = await this.sessions.resolve(sessionId);
+    const history = await this.sessions.getContextMessages(id);
     const messages = this.prepareMessages(history, message);
 
     // TODO(core.md): sentinel.evaluate (streaming) goes here.
@@ -91,8 +94,8 @@ export class ConversationService {
         { onToken: (token) => emit({ type: 'token', content: token }) },
         clientSignal,
       );
-      this.sessions.append(id, { role: 'user', content: message });
-      this.sessions.append(id, { role: 'assistant', content });
+      await this.sessions.append(id, { role: 'user', content: message });
+      await this.sessions.append(id, { role: 'assistant', content });
       emit({ type: 'done', reply: content, model });
     } catch (err) {
       emit({
@@ -114,5 +117,23 @@ export class ConversationService {
       message,
       this.config.maxHistory,
     );
+  }
+
+  listSessions(options?: { limit?: number; offset?: number }) {
+    return this.sessions.listSessions(options);
+  }
+
+  async searchSessions(
+    query: string,
+    options?: { limit?: number; sessionId?: string },
+  ): Promise<SessionSearchResult[]> {
+    try {
+      return await this.sessions.searchMessages(query, options);
+    } catch (err) {
+      if (err instanceof InvalidSearchQueryError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
   }
 }

@@ -31,7 +31,7 @@
       }
 
       .app {
-        width: min(900px, 100%);
+        width: min(1200px, 100%);
         height: min(900px, 100vh);
         display: flex;
         flex-direction: column;
@@ -143,6 +143,102 @@
         font-style: italic;
       }
 
+      .new-btn {
+        width: auto;
+        padding: 8px 14px;
+        font-size: 13px;
+      }
+
+      .body {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+
+      .sidebar {
+        width: 260px;
+        flex-shrink: 0;
+        border-right: 1px solid #333;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      #search {
+        margin: 12px;
+        padding: 10px 12px;
+        border: 1px solid #444;
+        border-radius: 8px;
+        background: #111;
+        color: #eee;
+        font: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+
+      #search:focus {
+        border-color: #666;
+      }
+
+      #sessions {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0 12px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .session-item {
+        padding: 10px 12px;
+        border: 1px solid #333;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      .session-item:hover {
+        border-color: #555;
+      }
+
+      .session-item.active {
+        border-color: #6f8f82;
+        background: #202624;
+      }
+
+      .session-item .title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-item .meta {
+        color: #777;
+        font-size: 11px;
+        margin-top: 4px;
+        font-family: monospace;
+      }
+
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      @media (max-width: 700px) {
+        .body {
+          flex-direction: column;
+        }
+
+        .sidebar {
+          width: 100%;
+          border-right: 0;
+          border-bottom: 1px solid #333;
+          max-height: 180px;
+        }
+      }
+
       @media (max-width: 600px) {
         body {
           align-items: stretch;
@@ -169,22 +265,32 @@
       <header>
         <h1>ICOS</h1>
         <span id="session">new session</span>
+        <button class="new-btn" id="new" type="button">+ New</button>
       </header>
 
-      <main id="messages">
-        <div class="message system">Core online.</div>
-      </main>
+      <div class="body">
+        <aside class="sidebar">
+          <input id="search" placeholder="Search sessions..." autocomplete="off" />
+          <div id="sessions"></div>
+        </aside>
 
-      <form class="composer" id="composer">
-        <textarea
-          id="input"
-          placeholder="Talk to ICOS..."
-          autocomplete="off"
-          autofocus
-        ></textarea>
+        <div class="main">
+          <main id="messages">
+            <div class="message system">Core online.</div>
+          </main>
 
-        <button id="send" type="submit">Send</button>
-      </form>
+          <form class="composer" id="composer">
+            <textarea
+              id="input"
+              placeholder="Talk to ICOS..."
+              autocomplete="off"
+              autofocus
+            ></textarea>
+
+            <button id="send" type="submit">Send</button>
+          </form>
+        </div>
+      </div>
     </div>
 
     <script>
@@ -195,6 +301,138 @@
       const send = document.getElementById('send');
       const session = document.getElementById('session');
       const composer = document.getElementById('composer');
+      const sessions = document.getElementById('sessions');
+      const search = document.getElementById('search');
+      const newButton = document.getElementById('new');
+
+      function shortId(id) {
+        return id.slice(0, 8);
+      }
+
+      function formatDate(iso) {
+        return new Date(iso).toLocaleString();
+      }
+
+      function markActive() {
+        for (const item of sessions.children) {
+          item.classList.toggle('active', item.dataset.id === sessionId);
+        }
+      }
+
+      function renderSessionItem(id, title, meta) {
+        const item = document.createElement('div');
+        item.className = 'session-item';
+        item.dataset.id = id;
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'title';
+        titleEl.textContent = title;
+
+        const metaEl = document.createElement('div');
+        metaEl.className = 'meta';
+        metaEl.textContent = meta;
+
+        item.appendChild(titleEl);
+        item.appendChild(metaEl);
+        item.addEventListener('click', () => openSession(id));
+        sessions.appendChild(item);
+      }
+
+      async function refreshSessions() {
+        if (search.value.trim()) {
+          return;
+        }
+
+        try {
+          const response = await fetch('/core/sessions?limit=50');
+          const data = await response.json();
+
+          sessions.replaceChildren();
+
+          for (const s of data.sessions) {
+            renderSessionItem(
+              s.sessionId,
+              s.preview || `Session ${shortId(s.sessionId)}`,
+              `${s.messageCount} msgs · ${formatDate(s.updatedAt)}`,
+            );
+          }
+
+          markActive();
+        } catch {
+          // Sidebar is auxiliary; chat must keep working.
+        }
+      }
+
+      let searchTimer = null;
+
+      search.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(runSearch, 250);
+      });
+
+      async function runSearch() {
+        const q = search.value.trim();
+
+        if (!q) {
+          await refreshSessions();
+          return;
+        }
+
+        try {
+          const response = await fetch(
+            `/core/sessions/search?q=${encodeURIComponent(q)}&limit=50`,
+          );
+          const data = await response.json();
+
+          sessions.replaceChildren();
+
+          for (const r of data.results) {
+            renderSessionItem(
+              r.sessionId,
+              r.content,
+              `${r.role} · ${shortId(r.sessionId)} · ${formatDate(r.createdAt)}`,
+            );
+          }
+
+          markActive();
+        } catch {
+          // Ignore search errors while typing.
+        }
+      }
+
+      async function openSession(id) {
+        sessionId = id;
+        session.textContent = id;
+        messages.replaceChildren();
+
+        try {
+          const response = await fetch(`/core/conversation/${id}`);
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+
+          for (const m of data.messages) {
+            addMessage(m.role, m.content);
+          }
+        } catch (error) {
+          addMessage('system', `Error: ${error.message}`);
+        }
+
+        markActive();
+        input.focus();
+      }
+
+      newButton.addEventListener('click', () => {
+        sessionId = null;
+        session.textContent = 'new session';
+        messages.replaceChildren();
+        addMessage('system', 'New session.');
+        markActive();
+        input.focus();
+      });
 
       function addMessage(role, content) {
         const element = document.createElement('div');
@@ -341,6 +579,7 @@
         addMessage('user', message);
 
         await sendMessage(message);
+        await refreshSessions();
       });
 
       // Enter sends.
@@ -351,6 +590,8 @@
           composer.requestSubmit();
         }
       });
+
+      refreshSessions();
     </script>
   </body>
 </html>

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { loadConfig } from './config';
 
 describe('loadConfig', () => {
@@ -33,5 +34,14 @@ describe('loadConfig', () => {
 
   it('throws on non-positive integers', () => {
     expect(() => loadConfig({ LLM_MODEL: 'm', PORT: 'abc' })).toThrow(/PORT/);
+  });
+
+  it('defaults the database path and resolves overrides absolutely', () => {
+    expect(loadConfig({ LLM_MODEL: 'm' }).dbPath).toBe(
+      resolve(process.cwd(), './data/core.sqlite'),
+    );
+    expect(
+      loadConfig({ LLM_MODEL: 'm', CORE_DB_PATH: './custom/t.sqlite' }).dbPath,
+    ).toBe(resolve(process.cwd(), './custom/t.sqlite'));
   });
 });

@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 export const CORE_CONFIG = 'CORE_CONFIG';
 
 export interface CoreConfig {
@@ -8,6 +10,7 @@ export interface CoreConfig {
   llmTimeoutMs: number;
   systemPrompt: string;
   maxHistory: number;
+  dbPath: string;
 }
 
 function parsePositiveInt(
@@ -43,7 +46,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
       (env.SYSTEM_PROMPT ?? 'You are Isabel, a helpful assistant.').trim() ||
       'You are Isabel, a helpful assistant.',
     maxHistory: parsePositiveInt(env.MAX_HISTORY, 50, 'MAX_HISTORY'),
+    dbPath: resolvePath(env.CORE_DB_PATH, './data/core.sqlite'),
   };
+}
+
+function resolvePath(raw: string | undefined, fallback: string): string {
+  const value = (raw ?? '').trim() || fallback;
+  return resolve(process.cwd(), value);
 }
 
 export const coreConfigProvider = {

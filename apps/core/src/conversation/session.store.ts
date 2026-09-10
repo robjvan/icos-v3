@@ -1,40 +1,72 @@
-import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
 import type { ChatMessage } from '../llm/llm.client';
+import { SessionRepository } from '../session/session.repository';
+import type {
+  SessionSearchResult,
+  SessionSummary,
+} from '../session/session.repository';
 
 /**
- * In-memory session history. Lost on restart by design (Milestone 1).
- * Persistence is an explicit future milestone.
+ * Core-facing session abstraction. Knows sessions, history windows,
+ * and search — never SQL. Persistence lives in `SessionRepository`.
+ *
+ * Storage is unlimited for practical purposes; `config.maxHistory`
+ * bounds only what reaches the LLM, never what is kept.
  */
 @Injectable()
 export class SessionStore {
-  private readonly sessions = new Map<string, ChatMessage[]>();
-
-  constructor(@Inject(CORE_CONFIG) private readonly config: CoreConfig) {}
+  constructor(
+    private readonly repository: SessionRepository,
+    @Inject(CORE_CONFIG) private readonly config: CoreConfig,
+  ) {}
 
   /** Resolve to an existing session or create a new one. */
-  resolve(sessionId?: string): { id: string; isNew: boolean } {
+  async resolve(sessionId?: string): Promise<{ id: string; isNew: boolean }> {
     if (sessionId) {
-      if (!this.sessions.has(sessionId)) {
-        this.sessions.set(sessionId, []);
+      const existing = await this.repository.getSession(sessionId);
+      if (!existing) {
+        await this.repository.createSession(sessionId);
         return { id: sessionId, isNew: true };
       }
       return { id: sessionId, isNew: false };
     }
     const id = randomUUID();
-    this.sessions.set(id, []);
+    await this.repository.createSession(id);
     return { id, isNew: true };
   }
 
-  append(sessionId: string, message: ChatMessage): void {
-    const history = this.sessions.get(sessionId) ?? [];
-    history.push(message);
-    this.sessions.set(sessionId, history.slice(-this.config.maxHistory));
+  async append(sessionId: string, message: ChatMessage): Promise<void> {
+    await this.repository.appendMessage(sessionId, message);
   }
 
-  get(sessionId: string): ChatMessage[] | undefined {
-    return this.sessions.get(sessionId);
+  /** Recent window for LLM context construction (bounded by maxHistory). */
+  async getContextMessages(sessionId: string): Promise<ChatMessage[]> {
+    return this.repository.getMessages(sessionId, {
+      limit: this.config.maxHistory,
+    });
+  }
+
+  /** Complete transcript. `undefined` when the session does not exist. */
+  async getHistory(sessionId: string): Promise<ChatMessage[] | undefined> {
+    const session = await this.repository.getSession(sessionId);
+    if (!session) return undefined;
+    return this.repository.getMessages(sessionId);
+  }
+
+  async listSessions(options?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<SessionSummary[]> {
+    return this.repository.listSessions(options);
+  }
+
+  searchMessages(
+    query: string,
+    options?: { limit?: number; sessionId?: string },
+  ): Promise<SessionSearchResult[]> {
+    return this.repository.searchMessages(query, options);
   }
 }

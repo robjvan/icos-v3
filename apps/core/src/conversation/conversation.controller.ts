@@ -31,9 +31,9 @@ export class ConversationController {
   }
 
   @Get(':id')
-  history(
+  async history(
     @Param('id', new ParseUUIDPipe()) id: string,
-  ): ConversationHistoryResponseDto {
+  ): Promise<ConversationHistoryResponseDto> {
     return this.conversation.history(id);
   }
 

@@ -46,6 +46,9 @@ lerna-debug.log*
 .temp
 .tmp
 
+# Local SQLite data (CORE_DB_PATH)
+/data
+
 # Runtime data
 pids
 *.pid

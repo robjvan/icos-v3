@@ -1,23 +1,30 @@
 import {
   BadGatewayException,
+  BadRequestException,
   GatewayTimeoutException,
   NotFoundException,
 } from '@nestjs/common';
-import { CoreConfig } from '../config';
+import type { CoreConfig } from '../config';
 import { LlmClient, LlmError } from '../llm/llm.client';
 import type { ChatMessage, ChatResult, StreamSink } from '../llm/llm.client';
+import { InvalidSearchQueryError } from '../session/session.repository';
 import { ConversationService } from './conversation.service';
 import type { ConversationStreamEvent } from './conversation.service';
+import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
 
-const config: CoreConfig = {
-  port: 3000,
-  llmBaseUrl: 'http://localhost:11434/v1',
-  llmModel: 'test-model',
-  llmTimeoutMs: 1000,
-  systemPrompt: 'test-system',
-  maxHistory: 50,
-};
+function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
+  return {
+    port: 3000,
+    llmBaseUrl: 'http://localhost:11434/v1',
+    llmModel: 'test-model',
+    llmTimeoutMs: 1000,
+    systemPrompt: 'test-system',
+    maxHistory: 50,
+    dbPath: ':memory:',
+    ...overrides,
+  };
+}
 
 type ChatFn = (messages: ChatMessage[]) => Promise<ChatResult>;
 type ChatStreamFn = (
@@ -26,8 +33,13 @@ type ChatStreamFn = (
   signal?: AbortSignal,
 ) => Promise<ChatResult>;
 
-function setup(chatImpl?: ChatFn, chatStreamImpl?: ChatStreamFn) {
-  const store = new SessionStore(config);
+function setup(
+  config: CoreConfig = testConfig(),
+  chatImpl?: ChatFn,
+  chatStreamImpl?: ChatStreamFn,
+) {
+  const repository = new FakeSessionRepository();
+  const store = new SessionStore(repository, config);
   const chat = jest.fn<Promise<ChatResult>, [ChatMessage[]]>(
     chatImpl ?? (() => Promise.resolve({ content: 'hi back', model: 'm' })),
   );
@@ -42,7 +54,7 @@ function setup(chatImpl?: ChatFn, chatStreamImpl?: ChatStreamFn) {
   const llm = { chat, chatStream } as unknown as LlmClient;
   return {
     service: new ConversationService(store, llm, config),
-    store,
+    repository,
     chat,
     chatStream,
   };
@@ -50,7 +62,7 @@ function setup(chatImpl?: ChatFn, chatStreamImpl?: ChatStreamFn) {
 
 describe('ConversationService', () => {
   it('creates a session, calls the LLM with system context, and stores history', async () => {
-    const { service, store, chat } = setup();
+    const { service, repository, chat } = setup();
 
     const result = await service.converse('hello');
 
@@ -63,7 +75,7 @@ describe('ConversationService', () => {
       role: 'user',
       content: 'hello',
     });
-    expect(store.get(result.sessionId)).toEqual([
+    expect(await repository.getMessages(result.sessionId)).toEqual([
       { role: 'user', content: 'hello' },
       { role: 'assistant', content: 'hi back' },
     ]);
@@ -83,15 +95,42 @@ describe('ConversationService', () => {
     ]);
   });
 
+  it('bounds LLM context to maxHistory while persisting everything', async () => {
+    const config = testConfig({ maxHistory: 5 });
+    const { service, repository, chat } = setup(config);
+    const { sessionId } = await service.converse('seed');
+    for (let i = 0; i < 10; i++) {
+      await repository.appendMessage(sessionId, {
+        role: 'user',
+        content: `stored-${i}`,
+      });
+    }
+
+    await service.converse('latest', sessionId);
+
+    const sent = chat.mock.calls[1][0];
+    // system + last 5 stored + new input.
+    expect(sent.map((m) => m.content)).toEqual([
+      'test-system',
+      'stored-5',
+      'stored-6',
+      'stored-7',
+      'stored-8',
+      'stored-9',
+      'latest',
+    ]);
+    expect(await repository.getMessages(sessionId)).toHaveLength(14);
+  });
+
   it('maps LLM timeouts to 504 and other failures to 502', async () => {
-    const timeout = setup(() =>
+    const timeout = setup(testConfig(), () =>
       Promise.reject(new LlmError(504, 'timed out', true)),
     );
     await expect(timeout.service.converse('hi')).rejects.toBeInstanceOf(
       GatewayTimeoutException,
     );
 
-    const failure = setup(() =>
+    const failure = setup(testConfig(), () =>
       Promise.reject(new LlmError(502, 'bad', false)),
     );
     await expect(failure.service.converse('hi')).rejects.toBeInstanceOf(
@@ -102,15 +141,53 @@ describe('ConversationService', () => {
   it('returns history and 404s unknown sessions', async () => {
     const { service } = setup();
     const { sessionId } = await service.converse('hello');
-    expect(service.history(sessionId).messages).toHaveLength(2);
-    expect(() =>
+    expect((await service.history(sessionId)).messages).toHaveLength(2);
+    await expect(
       service.history('00000000-0000-0000-0000-000000000000'),
-    ).toThrow(NotFoundException);
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('lists sessions newest-first', async () => {
+    const { service } = setup();
+    await service.converse('first topic');
+    const second = await service.converse('second topic');
+
+    const sessions = await service.listSessions();
+    expect(sessions.map((s) => s.sessionId)).toEqual([
+      second.sessionId,
+      sessions[1]?.sessionId,
+    ]);
+    expect(sessions[0]).toMatchObject({
+      sessionId: second.sessionId,
+      messageCount: 2,
+      preview: 'second topic',
+    });
+  });
+
+  it('searches transcripts and maps invalid queries to 400', async () => {
+    const { service } = setup();
+    const { sessionId } = await service.converse('I like teal');
+
+    const results = await service.searchSessions('teal');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      sessionId,
+      role: 'user',
+      content: 'I like teal',
+    });
+
+    const failing = setup();
+    jest
+      .spyOn(failing.repository, 'searchMessages')
+      .mockRejectedValue(new InvalidSearchQueryError('"'));
+    await expect(failing.service.searchSessions('"')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   describe('converseStream', () => {
     it('emits meta, tokens, done in order and stores history', async () => {
-      const { service, store } = setup();
+      const { service, repository } = setup();
       const events: ConversationStreamEvent[] = [];
 
       await service.converseStream('hello', undefined, (event) =>
@@ -130,14 +207,14 @@ describe('ConversationService', () => {
         model: 'm',
       });
       expect(sessionId).toBeDefined();
-      expect(store.get(sessionId ?? '')).toEqual([
+      expect(await repository.getMessages(sessionId ?? '')).toEqual([
         { role: 'user', content: 'hello' },
         { role: 'assistant', content: 'hi back' },
       ]);
     });
 
     it('emits error and stores nothing when the LLM fails', async () => {
-      const { service, store } = setup(undefined, () =>
+      const { service, repository } = setup(testConfig(), undefined, () =>
         Promise.reject(new LlmError(502, 'boom', false)),
       );
       const events: ConversationStreamEvent[] = [];
@@ -150,7 +227,7 @@ describe('ConversationService', () => {
       expect(events[1]).toMatchObject({ type: 'error', message: 'boom' });
       expect(events).toHaveLength(2);
       const sessionId = events[0].type === 'meta' ? events[0].sessionId : '';
-      expect(store.get(sessionId)).toEqual([]);
+      expect(await repository.getMessages(sessionId)).toHaveLength(0);
     });
   });
 });
