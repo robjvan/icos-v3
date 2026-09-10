@@ -1,12 +1,15 @@
-import { dirname } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
+
+export type DatabaseSchema = 'sessions' | 'memories';
 
 /**
  * Canonical transcript schema. `messages` is the source of truth;
  * `messages_fts` is a derived search index, rebuildable at any time.
+ * Lives in the sessions database only.
  */
-const SCHEMA_SQL = `
+const SESSIONS_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -52,10 +55,19 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
     VALUES ('delete', old.id, old.content);
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
+`;
 
--- Memory candidate evidence ledger (Milestone 4). Observations about
--- what might be worth retaining — NOT epistemic memory. No embeddings,
--- no promotion state, no decay: history stays history.
+/**
+ * Memory candidate evidence ledger schema. Observations about what might
+ * be worth retaining — NOT epistemic memory. No embeddings, no promotion
+ * state, no decay: history stays history.
+ *
+ * Provenance (`session_id`, `message_id`) is deliberately NOT a foreign
+ * key: the transcript lives in a different database file, and SQLite
+ * cannot enforce cross-database references. Integrity is by convention
+ * plus insertion order (candidates are saved for messages just written).
+ */
+const MEMORIES_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS memory_candidates (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -73,15 +85,7 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
 
     extractor_model TEXT NOT NULL,
     extractor_version TEXT NOT NULL,
-    extracted_at TEXT NOT NULL,
-
-    FOREIGN KEY (session_id)
-        REFERENCES sessions(id)
-        ON DELETE CASCADE,
-
-    FOREIGN KEY (message_id)
-        REFERENCES messages(id)
-        ON DELETE CASCADE
+    extracted_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_candidates_session
@@ -94,28 +98,38 @@ CREATE INDEX IF NOT EXISTS idx_memory_candidates_kind
 ON memory_candidates(kind);
 `;
 
-const REQUIRED_TABLES = [
-  'sessions',
-  'messages',
-  'messages_fts',
-  'memory_candidates',
-];
-const REQUIRED_TRIGGERS = ['messages_ai', 'messages_ad', 'messages_au'];
+const SCHEMAS: Record<
+  DatabaseSchema,
+  { sql: string; tables: string[]; triggers: string[] }
+> = {
+  sessions: {
+    sql: SESSIONS_SCHEMA_SQL,
+    tables: ['sessions', 'messages', 'messages_fts'],
+    triggers: ['messages_ai', 'messages_ad', 'messages_au'],
+  },
+  memories: {
+    sql: MEMORIES_SCHEMA_SQL,
+    tables: ['memory_candidates'],
+    triggers: [],
+  },
+};
 
 /**
- * Open (creating parent directories as needed) and initialize the
- * transcript database. Deterministic and repeatable: safe to run on
- * every startup. Throws on any failure — Core must not run without
- * its transcript store.
+ * Open (creating parent directories as needed) and initialize a Core
+ * database file. Deterministic and repeatable: safe to run on every
+ * startup. Throws on any failure — Core must not run without its stores.
  */
-export function openDatabase(dbPath: string): Database.Database {
+export function openDatabase(
+  dbPath: string,
+  schema: DatabaseSchema,
+): Database.Database {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
-    db.exec(SCHEMA_SQL);
-    verifySchema(db);
+    db.exec(SCHEMAS[schema].sql);
+    verifySchema(db, schema);
     return db;
   } catch (err) {
     db.close();
@@ -123,23 +137,138 @@ export function openDatabase(dbPath: string): Database.Database {
   }
 }
 
-function verifySchema(db: Database.Database): void {
+function verifySchema(db: Database.Database, schema: DatabaseSchema): void {
+  const expected = SCHEMAS[schema];
+  const names = [...expected.tables, ...expected.triggers].map((n) => `'${n}'`);
   const rows = db
     .prepare(
-      "SELECT name, type FROM sqlite_master WHERE name IN ('sessions', 'messages', 'messages_fts', 'memory_candidates', 'messages_ai', 'messages_ad', 'messages_au')",
+      `SELECT name, type FROM sqlite_master WHERE name IN (${names.join(', ')})`,
     )
     .all() as { name: string; type: string }[];
   const byName = new Map(rows.map((row) => [row.name, row.type]));
-  for (const table of REQUIRED_TABLES) {
+  for (const table of expected.tables) {
     if (byName.get(table) !== 'table') {
-      throw new Error(`Transcript database missing required table "${table}"`);
+      throw new Error(`Database missing required table "${table}"`);
     }
   }
-  for (const trigger of REQUIRED_TRIGGERS) {
+  for (const trigger of expected.triggers) {
     if (byName.get(trigger) !== 'trigger') {
-      throw new Error(
-        `Transcript database missing required trigger "${trigger}"`,
+      throw new Error(`Database missing required trigger "${trigger}"`);
+    }
+  }
+}
+
+function quotePath(path: string): string {
+  return `'${path.replace(/'/g, "''")}'`;
+}
+
+function legacyTables(db: Database.Database): Set<string> {
+  const rows = db
+    .prepare(
+      "SELECT name FROM legacy.sqlite_master WHERE name IN ('sessions', 'messages', 'memory_candidates')",
+    )
+    .all() as { name: string }[];
+  return new Set(rows.map((row) => row.name));
+}
+
+export interface SplitMigrationResult {
+  migratedSessions: boolean;
+  migratedMemories: boolean;
+  /** Non-fatal errors; the legacy file is never modified, so a retry is safe. */
+  errors: string[];
+}
+
+/**
+ * One-time migration from the pre-split single-file database: copy rows
+ * (not files) into the fresh per-concern databases, preserving ids so
+ * provenance survives. The legacy file is never modified. Idempotent —
+ * targets that already exist are left alone. Best-effort per file: a
+ * failure is reported in the result, never thrown, so boot can proceed
+ * with empty stores rather than bricking on a half-migratable legacy.
+ */
+export function migrateLegacyDatabase(
+  legacyPath: string | undefined,
+  sessionsPath: string,
+  memoriesPath: string,
+): SplitMigrationResult {
+  const result: SplitMigrationResult = {
+    migratedSessions: false,
+    migratedMemories: false,
+    errors: [],
+  };
+  if (!legacyPath || !existsSync(legacyPath)) return result;
+
+  if (!existsSync(sessionsPath) && !resolveSameFile(legacyPath, sessionsPath)) {
+    try {
+      const db = openDatabase(sessionsPath, 'sessions');
+      try {
+        db.exec(`ATTACH DATABASE ${quotePath(legacyPath)} AS legacy`);
+        try {
+          const tables = legacyTables(db);
+          if (tables.has('sessions')) {
+            db.exec(
+              'INSERT INTO sessions (id, created_at, updated_at) SELECT id, created_at, updated_at FROM legacy.sessions',
+            );
+          }
+          if (tables.has('messages')) {
+            // Triggers repopulate messages_fts automatically.
+            db.exec(
+              'INSERT INTO messages (id, session_id, role, content, created_at) SELECT id, session_id, role, content, created_at FROM legacy.messages',
+            );
+          }
+        } finally {
+          db.exec('DETACH DATABASE legacy');
+        }
+      } finally {
+        db.close();
+      }
+      result.migratedSessions = true;
+    } catch (err) {
+      result.migratedSessions = false;
+      result.errors.push(
+        `sessions migration failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
+
+  if (!existsSync(memoriesPath) && !resolveSameFile(legacyPath, memoriesPath)) {
+    try {
+      const db = openDatabase(memoriesPath, 'memories');
+      try {
+        db.exec(`ATTACH DATABASE ${quotePath(legacyPath)} AS legacy`);
+        try {
+          if (legacyTables(db).has('memory_candidates')) {
+            db.exec(
+              `INSERT INTO memory_candidates
+                 (id, session_id, message_id, kind, subject, predicate, object,
+                  confidence, importance, stability,
+                  extractor_model, extractor_version, extracted_at)
+               SELECT id, session_id, message_id, kind, subject, predicate, object,
+                      confidence, importance, stability,
+                      extractor_model, extractor_version, extracted_at
+                 FROM legacy.memory_candidates`,
+            );
+          }
+        } finally {
+          db.exec('DETACH DATABASE legacy');
+        }
+      } finally {
+        db.close();
+      }
+      result.migratedMemories = true;
+    } catch (err) {
+      result.migratedMemories = false;
+      result.errors.push(
+        `memories migration failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  return result;
+}
+
+function resolveSameFile(a: string, b: string): boolean {
+  // Avoid copying a file onto itself when a target is explicitly
+  // pointed at the legacy location.
+  return resolve(a) === resolve(b);
 }

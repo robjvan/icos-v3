@@ -72,7 +72,11 @@ describe('Conversation (e2e)', () => {
     messages: { role: string; content: string }[];
   }
 
-  async function createApp(dbPath: string): Promise<INestApplication<App>> {
+  async function createApp(
+    sessionDbPath: string,
+    memoryDbPath: string,
+    legacyDbPath?: string,
+  ): Promise<INestApplication<App>> {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [CoreModule],
     })
@@ -84,7 +88,9 @@ describe('Conversation (e2e)', () => {
         llmTimeoutMs: 1000,
         systemPrompt: 'test-system',
         maxHistory: 50,
-        dbPath,
+        sessionDbPath,
+        memoryDbPath,
+        legacyDbPath: legacyDbPath ?? join(dir, 'legacy-missing.sqlite'),
         memoryExtractionEnabled: true,
         memoryLlmBaseUrl: 'http://localhost:11434/v1',
         memoryLlmModel: 'test-model',
@@ -116,7 +122,10 @@ describe('Conversation (e2e)', () => {
     extract.mockClear();
     extractFails = false;
     dir = mkdtempSync(join(tmpdir(), 'icos-e2e-'));
-    app = await createApp(join(dir, 'core.sqlite'));
+    app = await createApp(
+      join(dir, 'sessions.sqlite'),
+      join(dir, 'memories.sqlite'),
+    );
   });
 
   afterEach(async () => {
@@ -222,9 +231,10 @@ describe('Conversation (e2e)', () => {
   });
 
   it('persists sessions across restarts', async () => {
-    const dbPath = join(dir, 'restart.sqlite');
+    const sessionDbPath = join(dir, 'restart-sessions.sqlite');
+    const memoryDbPath = join(dir, 'restart-memories.sqlite');
     await app?.close();
-    app = await createApp(dbPath);
+    app = await createApp(sessionDbPath, memoryDbPath);
 
     const first = await request(http())
       .post('/core/conversation')
@@ -232,9 +242,9 @@ describe('Conversation (e2e)', () => {
       .expect(200);
     const { sessionId } = first.body as ConversationResponse;
 
-    // Simulate a Core restart against the same database file.
+    // Simulate a Core restart against the same database files.
     await app?.close();
-    app = await createApp(dbPath);
+    app = await createApp(sessionDbPath, memoryDbPath);
 
     const history = await request(http())
       .get(`/core/conversation/${sessionId}`)

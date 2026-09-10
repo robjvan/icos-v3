@@ -5,8 +5,9 @@ import { memoryLlmClientProvider } from '../llm/llm-client.providers';
 import { LlmMemoryCandidateExtractor } from '../memory/llm-memory-candidate-extractor';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { MemoryDatabaseService } from '../memory/memory-database.service';
 import { SqliteMemoryCandidateRepository } from '../memory/sqlite-memory-candidate.repository';
-import { DatabaseService } from '../session/database.service';
+import { SessionDatabaseService } from '../session/session-database.service';
 import { SessionRepository } from '../session/session.repository';
 import { SqliteSessionRepository } from '../session/sqlite-session.repository';
 import { CandidatesController } from './candidates.controller';
@@ -23,7 +24,8 @@ import { SessionsController } from './sessions.controller';
   ],
   providers: [
     coreConfigProvider,
-    DatabaseService,
+    SessionDatabaseService,
+    MemoryDatabaseService,
     {
       provide: SessionRepository,
       useClass: SqliteSessionRepository,

@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { CoreConfig } from '../config';
 import { DatabaseService } from './database.service';
+import { SessionDatabaseService } from './session-database.service';
 import { SqliteSessionRepository } from './sqlite-session.repository';
 
-function testConfig(dbPath: string): CoreConfig {
+function testConfig(sessionDbPath: string, dir: string): CoreConfig {
   return {
     port: 3000,
     llmBaseUrl: 'http://localhost:11434/v1',
@@ -14,7 +15,9 @@ function testConfig(dbPath: string): CoreConfig {
     llmTimeoutMs: 1000,
     systemPrompt: 'sys',
     maxHistory: 50,
-    dbPath,
+    sessionDbPath,
+    memoryDbPath: join(dir, 'mem-unused.sqlite'),
+    legacyDbPath: join(dir, 'legacy-missing.sqlite'),
     memoryExtractionEnabled: false,
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'm',
@@ -26,8 +29,10 @@ describe('SqliteSessionRepository', () => {
   let dir = '';
   const services: DatabaseService[] = [];
 
-  const openService = (name = 'core.sqlite'): DatabaseService => {
-    const service = new DatabaseService(testConfig(join(dir, name)));
+  const openService = (name = 'sessions.sqlite'): SessionDatabaseService => {
+    const service = new SessionDatabaseService(
+      testConfig(join(dir, name), dir),
+    );
     service.onModuleInit();
     services.push(service);
     return service;
@@ -189,14 +194,14 @@ describe('SqliteSessionRepository', () => {
 
   it('survives close and reopen against the same file', async () => {
     const path = join(dir, 'persist.sqlite');
-    const firstService = new DatabaseService(testConfig(path));
+    const firstService = new SessionDatabaseService(testConfig(path, dir));
     firstService.onModuleInit();
     const first = new SqliteSessionRepository(firstService);
     await first.createSession('s1');
     await first.appendMessage('s1', { role: 'user', content: 'hello' });
     firstService.onModuleDestroy();
 
-    const secondService = new DatabaseService(testConfig(path));
+    const secondService = new SessionDatabaseService(testConfig(path, dir));
     secondService.onModuleInit();
     services.push(secondService);
     const second = new SqliteSessionRepository(secondService);
@@ -208,7 +213,7 @@ describe('SqliteSessionRepository', () => {
 
   it('rebuilds the FTS index from canonical messages', async () => {
     const path = join(dir, 'rebuild.sqlite');
-    const service = new DatabaseService(testConfig(path));
+    const service = new SessionDatabaseService(testConfig(path, dir));
     service.onModuleInit();
     services.push(service);
     const repository = new SqliteSessionRepository(service);

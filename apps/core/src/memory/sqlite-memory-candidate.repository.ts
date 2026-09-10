@@ -4,8 +4,8 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { DatabaseService } from '../session/database.service';
 import { MemoryCandidateRepository } from './memory-candidate.repository';
+import { MemoryDatabaseService } from './memory-database.service';
 import type { MemoryCandidate, NewMemoryCandidate } from './memory-candidate';
 
 const MAX_LIST_LIMIT = 200;
@@ -49,7 +49,7 @@ function toCandidate(row: CandidateRow): MemoryCandidate {
 
 @Injectable()
 export class SqliteMemoryCandidateRepository extends MemoryCandidateRepository {
-  constructor(private readonly databaseService: DatabaseService) {
+  constructor(private readonly databaseService: MemoryDatabaseService) {
     super();
   }
 

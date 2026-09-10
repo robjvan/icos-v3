@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { loadConfig } from './config';
 
 describe('loadConfig', () => {
@@ -36,12 +37,32 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ LLM_MODEL: 'm', PORT: 'abc' })).toThrow(/PORT/);
   });
 
-  it('defaults the database path and resolves overrides absolutely', () => {
-    expect(loadConfig({ LLM_MODEL: 'm' }).dbPath).toBe(
+  it('defaults the split database paths under the home directory', () => {
+    const config = loadConfig({ LLM_MODEL: 'm' });
+    expect(config.sessionDbPath).toBe(
+      join(homedir(), '.icos/data/sessions.db'),
+    );
+    expect(config.memoryDbPath).toBe(join(homedir(), '.icos/data/memories.db'));
+    expect(config.legacyDbPath).toBe(
       resolve(process.cwd(), './data/core.sqlite'),
     );
-    expect(
-      loadConfig({ LLM_MODEL: 'm', CORE_DB_PATH: './custom/t.sqlite' }).dbPath,
-    ).toBe(resolve(process.cwd(), './custom/t.sqlite'));
+  });
+
+  it('resolves database path overrides absolutely', () => {
+    const config = loadConfig({
+      LLM_MODEL: 'm',
+      SESSION_DB_PATH: './custom/s.sqlite',
+      MEMORY_DB_PATH: './custom/m.sqlite',
+      CORE_DB_PATH: './custom/legacy.sqlite',
+    });
+    expect(config.sessionDbPath).toBe(
+      resolve(process.cwd(), './custom/s.sqlite'),
+    );
+    expect(config.memoryDbPath).toBe(
+      resolve(process.cwd(), './custom/m.sqlite'),
+    );
+    expect(config.legacyDbPath).toBe(
+      resolve(process.cwd(), './custom/legacy.sqlite'),
+    );
   });
 });

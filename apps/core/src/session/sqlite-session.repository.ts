@@ -4,7 +4,7 @@
 import { Injectable } from '@nestjs/common';
 import Database from 'better-sqlite3';
 import type { ChatMessage } from '../llm/llm.client';
-import { DatabaseService } from './database.service';
+import { SessionDatabaseService } from './session-database.service';
 import {
   InvalidSearchQueryError,
   SessionRepository,
@@ -26,7 +26,7 @@ function nowIso(): string {
 
 @Injectable()
 export class SqliteSessionRepository extends SessionRepository {
-  constructor(private readonly databaseService: DatabaseService) {
+  constructor(private readonly databaseService: SessionDatabaseService) {
     super();
   }
 

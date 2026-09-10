@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 export const CORE_CONFIG = 'CORE_CONFIG';
 
@@ -10,7 +11,14 @@ export interface CoreConfig {
   llmTimeoutMs: number;
   systemPrompt: string;
   maxHistory: number;
-  dbPath: string;
+  sessionDbPath: string;
+  memoryDbPath: string;
+  /**
+   * Pre-split single-file database, probed once as a migration source.
+   * Explicit CORE_DB_PATH wins; otherwise the historical default
+   * ./data/core.sqlite. Never written to; ignored when absent.
+   */
+  legacyDbPath: string;
   memoryExtractionEnabled: boolean;
   memoryLlmBaseUrl: string;
   memoryLlmModel: string;
@@ -52,7 +60,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
       (env.SYSTEM_PROMPT ?? 'You are Isabel, a helpful assistant.').trim() ||
       'You are Isabel, a helpful assistant.',
     maxHistory: parsePositiveInt(env.MAX_HISTORY, 50, 'MAX_HISTORY'),
-    dbPath: resolvePath(env.CORE_DB_PATH, './data/core.sqlite'),
+    sessionDbPath: resolvePath(env.SESSION_DB_PATH, '~/.icos/data/sessions.db'),
+    memoryDbPath: resolvePath(env.MEMORY_DB_PATH, '~/.icos/data/memories.db'),
+    legacyDbPath: resolveLegacyDbPath(env.CORE_DB_PATH),
     memoryExtractionEnabled: parseBoolean(env.MEMORY_EXTRACTION_ENABLED, true),
     // Each falls back to its primary counterpart: the extraction role has
     // an explicit boundary (own client, own values) with zero-config default.
@@ -80,7 +90,17 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
 
 function resolvePath(raw: string | undefined, fallback: string): string {
   const value = (raw ?? '').trim() || fallback;
-  return resolve(process.cwd(), value);
+  if (value === '~') return homedir();
+  const expanded = value.startsWith('~/')
+    ? join(homedir(), value.slice(2))
+    : value;
+  return resolve(process.cwd(), expanded);
+}
+
+function resolveLegacyDbPath(raw: string | undefined): string {
+  const value = (raw ?? '').trim();
+  if (value) return resolvePath(value, value);
+  return resolve(process.cwd(), './data/core.sqlite');
 }
 
 export const coreConfigProvider = {

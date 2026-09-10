@@ -1,28 +1,24 @@
-import {
-  Inject,
-  Injectable,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import Database from 'better-sqlite3';
-import { CORE_CONFIG } from '../config';
-import type { CoreConfig } from '../config';
 import { openDatabase } from './database';
+import type { DatabaseSchema } from './database';
 
 /**
- * Owns the Core SQLite connection. Shared by the session transcript
- * store and the memory-candidate evidence ledger — both live in the
- * same database file, but neither knows about the other.
+ * Owns one Core SQLite connection. Subclassed per database file so each
+ * store gets its own lifecycle while sharing open/close semantics.
  */
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private db: Database.Database | null = null;
 
-  constructor(@Inject(CORE_CONFIG) private readonly config: CoreConfig) {}
+  constructor(
+    private readonly dbPath: string,
+    private readonly schema: DatabaseSchema,
+  ) {}
 
   onModuleInit(): void {
-    // Throws on failure: Core must fail startup without its database.
-    this.db = openDatabase(this.config.dbPath);
+    // Throws on failure: Core must fail startup without its stores.
+    this.db = openDatabase(this.dbPath, this.schema);
   }
 
   onModuleDestroy(): void {
