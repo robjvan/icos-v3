@@ -1,17 +1,10 @@
 /* eslint-disable @typescript-eslint/require-await --
    async is contractual (SessionRepository returns Promises);
    better-sqlite3 itself is synchronous. */
-import {
-  Inject,
-  Injectable,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import Database from 'better-sqlite3';
-import { CORE_CONFIG } from '../config';
-import type { CoreConfig } from '../config';
 import type { ChatMessage } from '../llm/llm.client';
-import { openDatabase } from './database';
+import { DatabaseService } from './database.service';
 import {
   InvalidSearchQueryError,
   SessionRepository,
@@ -32,31 +25,13 @@ function nowIso(): string {
 }
 
 @Injectable()
-export class SqliteSessionRepository
-  extends SessionRepository
-  implements OnModuleInit, OnModuleDestroy
-{
-  private db: Database.Database | null = null;
-
-  constructor(@Inject(CORE_CONFIG) private readonly config: CoreConfig) {
+export class SqliteSessionRepository extends SessionRepository {
+  constructor(private readonly databaseService: DatabaseService) {
     super();
   }
 
-  onModuleInit(): void {
-    // Throws on failure: Core must fail startup without its transcript store.
-    this.db = openDatabase(this.config.dbPath);
-  }
-
-  onModuleDestroy(): void {
-    this.db?.close();
-    this.db = null;
-  }
-
   private get database(): Database.Database {
-    if (!this.db) {
-      throw new Error('Session database is not initialized');
-    }
-    return this.db;
+    return this.databaseService.connection;
   }
 
   async createSession(id: string): Promise<void> {

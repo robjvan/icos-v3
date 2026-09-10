@@ -52,9 +52,54 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
     VALUES ('delete', old.id, old.content);
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
+
+-- Memory candidate evidence ledger (Milestone 4). Observations about
+-- what might be worth retaining — NOT epistemic memory. No embeddings,
+-- no promotion state, no decay: history stays history.
+CREATE TABLE IF NOT EXISTS memory_candidates (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+
+    kind TEXT NOT NULL,
+
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+
+    confidence REAL NOT NULL,
+    importance REAL NOT NULL,
+    stability REAL NOT NULL,
+
+    extractor_model TEXT NOT NULL,
+    extractor_version TEXT NOT NULL,
+    extracted_at TEXT NOT NULL,
+
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(id)
+        ON DELETE CASCADE,
+
+    FOREIGN KEY (message_id)
+        REFERENCES messages(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_session
+ON memory_candidates(session_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_message
+ON memory_candidates(message_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_kind
+ON memory_candidates(kind);
 `;
 
-const REQUIRED_TABLES = ['sessions', 'messages', 'messages_fts'];
+const REQUIRED_TABLES = [
+  'sessions',
+  'messages',
+  'messages_fts',
+  'memory_candidates',
+];
 const REQUIRED_TRIGGERS = ['messages_ai', 'messages_ad', 'messages_au'];
 
 /**
@@ -81,7 +126,7 @@ export function openDatabase(dbPath: string): Database.Database {
 function verifySchema(db: Database.Database): void {
   const rows = db
     .prepare(
-      "SELECT name, type FROM sqlite_master WHERE name IN ('sessions', 'messages', 'messages_fts', 'messages_ai', 'messages_ad', 'messages_au')",
+      "SELECT name, type FROM sqlite_master WHERE name IN ('sessions', 'messages', 'messages_fts', 'memory_candidates', 'messages_ai', 'messages_ad', 'messages_au')",
     )
     .all() as { name: string; type: string }[];
   const byName = new Map(rows.map((row) => [row.name, row.type]));

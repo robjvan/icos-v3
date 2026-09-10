@@ -5,6 +5,7 @@ import type { CoreConfig } from '../config';
 import type { ChatMessage } from '../llm/llm.client';
 import { SessionRepository } from '../session/session.repository';
 import type {
+  MessageRecord,
   SessionSearchResult,
   SessionSummary,
 } from '../session/session.repository';
@@ -38,8 +39,11 @@ export class SessionStore {
     return { id, isNew: true };
   }
 
-  async append(sessionId: string, message: ChatMessage): Promise<void> {
-    await this.repository.appendMessage(sessionId, message);
+  async append(
+    sessionId: string,
+    message: ChatMessage,
+  ): Promise<MessageRecord> {
+    return this.repository.appendMessage(sessionId, message);
   }
 
   /** Recent window for LLM context construction (bounded by maxHistory). */

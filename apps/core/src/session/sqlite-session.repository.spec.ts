@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { CoreConfig } from '../config';
+import { DatabaseService } from './database.service';
 import { SqliteSessionRepository } from './sqlite-session.repository';
 
 function testConfig(dbPath: string): CoreConfig {
@@ -14,27 +15,35 @@ function testConfig(dbPath: string): CoreConfig {
     systemPrompt: 'sys',
     maxHistory: 50,
     dbPath,
+    memoryExtractionEnabled: false,
+    memoryLlmBaseUrl: 'http://localhost:11434/v1',
+    memoryLlmModel: 'm',
+    memoryLlmTimeoutMs: 1000,
   };
 }
 
 describe('SqliteSessionRepository', () => {
   let dir = '';
-  let repo: SqliteSessionRepository | null = null;
+  const services: DatabaseService[] = [];
 
-  const openRepo = (name = 'core.sqlite'): SqliteSessionRepository => {
-    const instance = new SqliteSessionRepository(testConfig(join(dir, name)));
-    instance.onModuleInit();
-    repo = instance;
-    return instance;
+  const openService = (name = 'core.sqlite'): DatabaseService => {
+    const service = new DatabaseService(testConfig(join(dir, name)));
+    service.onModuleInit();
+    services.push(service);
+    return service;
   };
+
+  const openRepo = (name = 'core.sqlite'): SqliteSessionRepository =>
+    new SqliteSessionRepository(openService(name));
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'icos-repo-'));
   });
 
   afterEach(() => {
-    repo?.onModuleDestroy();
-    repo = null;
+    for (const service of services.splice(0)) {
+      service.onModuleDestroy();
+    }
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -180,31 +189,29 @@ describe('SqliteSessionRepository', () => {
 
   it('survives close and reopen against the same file', async () => {
     const path = join(dir, 'persist.sqlite');
-    const first = new SqliteSessionRepository(testConfig(path));
-    first.onModuleInit();
+    const firstService = new DatabaseService(testConfig(path));
+    firstService.onModuleInit();
+    const first = new SqliteSessionRepository(firstService);
     await first.createSession('s1');
     await first.appendMessage('s1', { role: 'user', content: 'hello' });
-    first.onModuleDestroy();
+    firstService.onModuleDestroy();
 
-    const second = new SqliteSessionRepository(testConfig(path));
-    second.onModuleInit();
-    repo = second;
-    try {
-      expect(await second.getMessages('s1')).toEqual([
-        { role: 'user', content: 'hello' },
-      ]);
-      expect(await second.searchMessages('hello')).toHaveLength(1);
-    } finally {
-      second.onModuleDestroy();
-      repo = null;
-    }
+    const secondService = new DatabaseService(testConfig(path));
+    secondService.onModuleInit();
+    services.push(secondService);
+    const second = new SqliteSessionRepository(secondService);
+    expect(await second.getMessages('s1')).toEqual([
+      { role: 'user', content: 'hello' },
+    ]);
+    expect(await second.searchMessages('hello')).toHaveLength(1);
   });
 
   it('rebuilds the FTS index from canonical messages', async () => {
     const path = join(dir, 'rebuild.sqlite');
-    const repository = new SqliteSessionRepository(testConfig(path));
-    repository.onModuleInit();
-    repo = repository;
+    const service = new DatabaseService(testConfig(path));
+    service.onModuleInit();
+    services.push(service);
+    const repository = new SqliteSessionRepository(service);
     await repository.createSession('s1');
     await repository.appendMessage('s1', {
       role: 'user',

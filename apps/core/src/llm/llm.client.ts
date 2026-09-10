@@ -1,10 +1,21 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CORE_CONFIG } from '../config';
-import type { CoreConfig } from '../config';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+}
+
+/**
+ * Narrow endpoint config. The client never sees roles, prompts, or
+ * Core-wide settings — any model role (conversation, extraction,
+ * sentinel) gets its own instance with its own values.
+ */
+export interface LlmEndpointConfig {
+  llmBaseUrl: string;
+  llmModel: string;
+  llmApiKey?: string;
+  llmTimeoutMs: number;
 }
 
 export interface ChatResult {
@@ -49,7 +60,9 @@ interface ChatCompletionsChunk {
 
 @Injectable()
 export class LlmClient {
-  constructor(@Inject(CORE_CONFIG) private readonly config: CoreConfig) {}
+  constructor(
+    @Inject(CORE_CONFIG) private readonly config: LlmEndpointConfig,
+  ) {}
 
   buildUrl(): string {
     return `${this.config.llmBaseUrl}/chat/completions`;

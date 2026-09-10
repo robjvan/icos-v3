@@ -8,6 +8,12 @@ import type { CoreConfig } from '../config';
 import { LlmClient, LlmError } from '../llm/llm.client';
 import type { ChatMessage, ChatResult, StreamSink } from '../llm/llm.client';
 import { InvalidSearchQueryError } from '../session/session.repository';
+import type { ValidatedCandidate } from '../memory/memory-candidate';
+import type { NewMemoryCandidate } from '../memory/memory-candidate';
+import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
+import type { MemoryExtractionInput } from '../memory/memory-candidate-extractor';
+import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import type { MemoryCandidate } from '../memory/memory-candidate';
 import { ConversationService } from './conversation.service';
 import type { ConversationStreamEvent } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
@@ -22,9 +28,16 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
     systemPrompt: 'test-system',
     maxHistory: 50,
     dbPath: ':memory:',
+    memoryExtractionEnabled: true,
+    memoryLlmBaseUrl: 'http://localhost:11434/v1',
+    memoryLlmModel: 'test-model',
+    memoryLlmTimeoutMs: 1000,
     ...overrides,
   };
 }
+
+const flushMicrotasks = (): Promise<void> =>
+  new Promise((resolve) => setImmediate(resolve));
 
 type ChatFn = (messages: ChatMessage[]) => Promise<ChatResult>;
 type ChatStreamFn = (
@@ -33,10 +46,15 @@ type ChatStreamFn = (
   signal?: AbortSignal,
 ) => Promise<ChatResult>;
 
+type ExtractFn = (
+  input: MemoryExtractionInput,
+) => Promise<ValidatedCandidate[]>;
+
 function setup(
   config: CoreConfig = testConfig(),
   chatImpl?: ChatFn,
   chatStreamImpl?: ChatStreamFn,
+  extractImpl?: ExtractFn,
 ) {
   const repository = new FakeSessionRepository();
   const store = new SessionStore(repository, config);
@@ -52,11 +70,32 @@ function setup(
       }),
   );
   const llm = { chat, chatStream } as unknown as LlmClient;
+  const extract = jest.fn<
+    Promise<ValidatedCandidate[]>,
+    [MemoryExtractionInput]
+  >(extractImpl ?? (() => Promise.resolve([])));
+  const extractor = { extract } as unknown as MemoryCandidateExtractor;
+  const saveCandidates = jest.fn(
+    (items: NewMemoryCandidate[]): Promise<MemoryCandidate[]> =>
+      Promise.resolve(
+        items.map((item, index) => ({
+          ...item,
+          id: `c${index}`,
+          extractedAt: new Date(0).toISOString(),
+        })),
+      ),
+  );
+  const candidates = {
+    saveCandidates,
+    listCandidates: jest.fn(() => Promise.resolve([])),
+  } as unknown as MemoryCandidateRepository;
   return {
-    service: new ConversationService(store, llm, config),
+    service: new ConversationService(store, llm, extractor, candidates, config),
     repository,
     chat,
     chatStream,
+    extract,
+    saveCandidates,
   };
 }
 
@@ -228,6 +267,87 @@ describe('ConversationService', () => {
       expect(events).toHaveLength(2);
       const sessionId = events[0].type === 'meta' ? events[0].sessionId : '';
       expect(await repository.getMessages(sessionId)).toHaveLength(0);
+    });
+  });
+
+  describe('memory extraction', () => {
+    const preference: ValidatedCandidate = {
+      kind: 'preference',
+      subject: 'user',
+      predicate: 'prefers',
+      object: 'TypeScript',
+      confidence: 0.94,
+      importance: 0.72,
+      stability: 0.88,
+    };
+
+    it('persists validated candidates with provenance after a turn', async () => {
+      const { service, extract, saveCandidates } = setup(
+        testConfig(),
+        undefined,
+        undefined,
+        () => Promise.resolve([preference]),
+      );
+
+      const { sessionId } = await service.converse('I prefer TypeScript');
+      await flushMicrotasks();
+
+      expect(extract).toHaveBeenCalledTimes(1);
+      expect(extract.mock.calls[0][0]).toMatchObject({
+        sessionId,
+        userMessage: { role: 'user', content: 'I prefer TypeScript' },
+        assistantMessage: { role: 'assistant', content: 'hi back' },
+      });
+      expect(saveCandidates).toHaveBeenCalledTimes(1);
+      expect(saveCandidates.mock.calls[0][0]).toEqual([
+        {
+          ...preference,
+          source: { sessionId, messageId: 1 },
+          extractorModel: 'test-model',
+          extractorVersion: 'memory-extraction-v1',
+        },
+      ]);
+    });
+
+    it('extracts after streamed turns too', async () => {
+      const { service, extract } = setup(
+        testConfig(),
+        undefined,
+        undefined,
+        () => Promise.resolve([preference]),
+      );
+
+      await service.converseStream('hello', undefined, () => {});
+      await flushMicrotasks();
+
+      expect(extract).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets the conversation succeed when extraction fails', async () => {
+      const { service, extract, saveCandidates } = setup(
+        testConfig(),
+        undefined,
+        undefined,
+        () => Promise.reject(new Error('extractor down')),
+      );
+
+      const result = await service.converse('hello');
+      await flushMicrotasks();
+
+      expect(result.reply).toBe('hi back');
+      expect(extract).toHaveBeenCalledTimes(1);
+      expect(saveCandidates).not.toHaveBeenCalled();
+    });
+
+    it('skips extraction when disabled', async () => {
+      const { service, extract } = setup(
+        testConfig({ memoryExtractionEnabled: false }),
+      );
+
+      await service.converse('hello');
+      await flushMicrotasks();
+
+      expect(extract).not.toHaveBeenCalled();
     });
   });
 });

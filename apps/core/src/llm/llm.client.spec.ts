@@ -9,6 +9,10 @@ const baseConfig: CoreConfig = {
   systemPrompt: 'sys',
   maxHistory: 50,
   dbPath: ':memory:',
+  memoryExtractionEnabled: false,
+  memoryLlmBaseUrl: 'http://localhost:11434/v1',
+  memoryLlmModel: 'test-model',
+  memoryLlmTimeoutMs: 1000,
 };
 
 function clientWith(overrides: Partial<CoreConfig> = {}): LlmClient {

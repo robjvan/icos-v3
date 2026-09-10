@@ -14,6 +14,10 @@ function makeStore(maxHistory = 50): {
     systemPrompt: 'sys',
     maxHistory,
     dbPath: ':memory:',
+    memoryExtractionEnabled: false,
+    memoryLlmBaseUrl: 'http://localhost:11434/v1',
+    memoryLlmModel: 'm',
+    memoryLlmTimeoutMs: 1000,
   };
   const repository = new FakeSessionRepository();
   return { store: new SessionStore(repository, config), repository };

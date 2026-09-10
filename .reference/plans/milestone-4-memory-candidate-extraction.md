@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned.
+Implemented (2026-09-10). Evidence: `evidence/milestone-4-evidence-extraction.md`. All §21 done-criteria met; §18 tests green (77 unit + 13 e2e).
 
 ## Objective
 

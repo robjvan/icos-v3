@@ -8,6 +8,7 @@ import { App } from 'supertest/types';
 import { CoreModule } from './../src/core.module';
 import { CORE_CONFIG } from './../src/config';
 import { LlmClient } from './../src/llm/llm.client';
+import { MemoryCandidateExtractor } from './../src/memory/memory-candidate-extractor';
 
 describe('Conversation (e2e)', () => {
   let app: INestApplication<App> | null = null;
@@ -16,6 +17,35 @@ describe('Conversation (e2e)', () => {
     Promise.resolve({ content: 'mock reply', model: 'test-model' }),
   );
   let streamFails = false;
+  let extractFails = false;
+  const extract = jest.fn(
+    (): Promise<
+      {
+        kind: string;
+        subject: string;
+        predicate: string;
+        object: string;
+        confidence: number;
+        importance: number;
+        stability: number;
+      }[]
+    > => {
+      if (extractFails) {
+        return Promise.reject(new Error('extractor down'));
+      }
+      return Promise.resolve([
+        {
+          kind: 'preference',
+          subject: 'user',
+          predicate: 'prefers',
+          object: 'e2e-subject',
+          confidence: 0.9,
+          importance: 0.7,
+          stability: 0.8,
+        },
+      ]);
+    },
+  );
   const chatStream = jest.fn(
     (
       messages: unknown,
@@ -55,9 +85,15 @@ describe('Conversation (e2e)', () => {
         systemPrompt: 'test-system',
         maxHistory: 50,
         dbPath,
+        memoryExtractionEnabled: true,
+        memoryLlmBaseUrl: 'http://localhost:11434/v1',
+        memoryLlmModel: 'test-model',
+        memoryLlmTimeoutMs: 1000,
       })
       .overrideProvider(LlmClient)
       .useValue({ chat, chatStream })
+      .overrideProvider(MemoryCandidateExtractor)
+      .useValue({ extract })
       .compile();
 
     const instance = moduleFixture.createNestApplication();
@@ -77,6 +113,8 @@ describe('Conversation (e2e)', () => {
     chat.mockResolvedValue({ content: 'mock reply', model: 'test-model' });
     chatStream.mockClear();
     streamFails = false;
+    extract.mockClear();
+    extractFails = false;
     dir = mkdtempSync(join(tmpdir(), 'icos-e2e-'));
     app = await createApp(join(dir, 'core.sqlite'));
   });
@@ -294,5 +332,56 @@ describe('Conversation (e2e)', () => {
       .get('/core/sessions/search')
       .query({ q: '' })
       .expect(400);
+  });
+
+  it('GET /core/memory-candidates exposes extracted candidates', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'I prefer oak' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    // Extraction runs after the turn; poll briefly for the background save.
+    let candidates: {
+      id: string;
+      object: string;
+      source: { sessionId: string; messageId: number };
+    }[] = [];
+    for (let i = 0; i < 50 && candidates.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const res = await request(http())
+        .get('/core/memory-candidates')
+        .query({ sessionId })
+        .expect(200);
+      candidates = (
+        res.body as {
+          candidates: {
+            id: string;
+            object: string;
+            source: { sessionId: string; messageId: number };
+          }[];
+        }
+      ).candidates;
+    }
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      object: 'e2e-subject',
+      source: { sessionId, messageId: 1 },
+    });
+  });
+
+  it('conversation still succeeds when extraction fails', async () => {
+    extractFails = true;
+
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+
+    const res = await request(http())
+      .get('/core/memory-candidates')
+      .expect(200);
+    expect((res.body as { candidates: unknown[] }).candidates).toHaveLength(0);
   });
 });

@@ -4,12 +4,16 @@ import {
   GatewayTimeoutException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
 import { LlmClient, LlmError } from '../llm/llm.client';
 import type { ChatMessage } from '../llm/llm.client';
+import { EXTRACTION_VERSION } from '../memory/extraction.prompt';
+import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
+import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
 import { InvalidSearchQueryError } from '../session/session.repository';
 import type { SessionSearchResult } from '../session/session.repository';
 import { buildContext } from './context.builder';
@@ -23,9 +27,13 @@ export type ConversationStreamEvent =
 
 @Injectable()
 export class ConversationService {
+  private readonly logger = new Logger(ConversationService.name);
+
   constructor(
     private readonly sessions: SessionStore,
     private readonly llm: LlmClient,
+    private readonly extractor: MemoryCandidateExtractor,
+    private readonly candidates: MemoryCandidateRepository,
     @Inject(CORE_CONFIG) private readonly config: CoreConfig,
   ) {}
 
@@ -45,8 +53,18 @@ export class ConversationService {
 
     try {
       const { content, model } = await this.llm.chat(messages);
-      await this.sessions.append(id, { role: 'user', content: message });
+      const userRecord = await this.sessions.append(id, {
+        role: 'user',
+        content: message,
+      });
       await this.sessions.append(id, { role: 'assistant', content });
+      this.extractTurn({
+        sessionId: id,
+        userMessageId: userRecord.id,
+        userMessage: message,
+        assistantMessage: content,
+        context: history,
+      });
       return { sessionId: id, reply: content, model };
     } catch (err) {
       if (err instanceof LlmError) {
@@ -94,8 +112,18 @@ export class ConversationService {
         { onToken: (token) => emit({ type: 'token', content: token }) },
         clientSignal,
       );
-      await this.sessions.append(id, { role: 'user', content: message });
+      const userRecord = await this.sessions.append(id, {
+        role: 'user',
+        content: message,
+      });
       await this.sessions.append(id, { role: 'assistant', content });
+      this.extractTurn({
+        sessionId: id,
+        userMessageId: userRecord.id,
+        userMessage: message,
+        assistantMessage: content,
+        context: history,
+      });
       emit({ type: 'done', reply: content, model });
     } catch (err) {
       emit({
@@ -121,6 +149,52 @@ export class ConversationService {
 
   listSessions(options?: { limit?: number; offset?: number }) {
     return this.sessions.listSessions(options);
+  }
+
+  /**
+   * Fire-and-forget enrichment: runs after the turn is persisted and the
+   * response is on its way. Never blocks conversation, never fails it —
+   * extraction errors are logged and dropped.
+   */
+  private extractTurn(input: {
+    sessionId: string;
+    userMessageId: number;
+    userMessage: string;
+    assistantMessage: string;
+    context: ChatMessage[];
+  }): void {
+    if (!this.config.memoryExtractionEnabled) return;
+    void this.extractor
+      .extract({
+        sessionId: input.sessionId,
+        userMessage: { role: 'user', content: input.userMessage },
+        assistantMessage: {
+          role: 'assistant',
+          content: input.assistantMessage,
+        },
+        context: input.context,
+      })
+      .then((validated) => {
+        if (validated.length === 0) return;
+        return this.candidates.saveCandidates(
+          validated.map((candidate) => ({
+            ...candidate,
+            source: {
+              sessionId: input.sessionId,
+              messageId: input.userMessageId,
+            },
+            extractorModel: this.config.memoryLlmModel,
+            extractorVersion: EXTRACTION_VERSION,
+          })),
+        );
+      })
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Memory extraction failed for session ${input.sessionId}: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        );
+      });
   }
 
   async searchSessions(
