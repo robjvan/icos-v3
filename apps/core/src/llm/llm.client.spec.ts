@@ -111,4 +111,122 @@ describe('LlmClient', () => {
       .catch((e: unknown) => e);
     expect(err).toMatchObject({ name: 'LlmError', httpStatus: 504 });
   });
+
+  describe('chatStream', () => {
+    function sseResponse(chunks: string[]): Response {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    }
+
+    function tokenChunk(content: string): string {
+      return `data: ${JSON.stringify({
+        model: 'test-model',
+        choices: [{ delta: { content } }],
+      })}\n\n`;
+    }
+
+    it('sends stream:true, forwards tokens in order, returns assembled reply', async () => {
+      const fetchMock = jest.fn(() =>
+        Promise.resolve(
+          sseResponse([
+            tokenChunk('Hel'),
+            tokenChunk('lo'),
+            'data: [DONE]\n\n',
+          ]),
+        ),
+      );
+      global.fetch = fetchMock;
+      const tokens: string[] = [];
+
+      const result = await clientWith().chatStream(
+        [{ role: 'user', content: 'hi' }],
+        { onToken: (token) => tokens.push(token) },
+      );
+
+      expect(result).toEqual({ content: 'Hello', model: 'test-model' });
+      expect(tokens).toEqual(['Hel', 'lo']);
+      const [, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ];
+      expect(JSON.parse(init.body as string)).toMatchObject({
+        model: 'test-model',
+        stream: true,
+      });
+    });
+
+    it('reassembles payloads split across chunk boundaries', async () => {
+      global.fetch = () =>
+        Promise.resolve(
+          sseResponse([
+            'data: {"model":"test-mo',
+            'del","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+          ]),
+        );
+      const tokens: string[] = [];
+
+      const result = await clientWith().chatStream(
+        [{ role: 'user', content: 'hi' }],
+        { onToken: (token) => tokens.push(token) },
+      );
+
+      expect(result.content).toBe('Hi');
+      expect(tokens).toEqual(['Hi']);
+    });
+
+    it('ignores keep-alive comments and malformed lines', async () => {
+      global.fetch = () =>
+        Promise.resolve(
+          sseResponse([
+            ': ping\n\ndata: not-json\n\n' +
+              tokenChunk('ok') +
+              'data: [DONE]\n\n',
+          ]),
+        );
+
+      const result = await clientWith().chatStream(
+        [{ role: 'user', content: 'hi' }],
+        { onToken: () => {} },
+      );
+
+      expect(result.content).toBe('ok');
+    });
+
+    it('throws 502 on error status and on empty streams', async () => {
+      global.fetch = () =>
+        Promise.resolve(new Response('boom', { status: 500 }));
+      await expect(
+        clientWith().chatStream([{ role: 'user', content: 'hi' }], {
+          onToken: () => {},
+        }),
+      ).rejects.toMatchObject({ name: 'LlmError', httpStatus: 502 });
+
+      global.fetch = () => Promise.resolve(sseResponse(['data: [DONE]\n\n']));
+      await expect(
+        clientWith().chatStream([{ role: 'user', content: 'hi' }], {
+          onToken: () => {},
+        }),
+      ).rejects.toMatchObject({ name: 'LlmError', httpStatus: 502 });
+    });
+
+    it('throws 504 when the request fails', async () => {
+      global.fetch = (): Promise<Response> => {
+        throw new DOMException('aborted', 'AbortError');
+      };
+      await expect(
+        clientWith().chatStream([{ role: 'user', content: 'hi' }], {
+          onToken: () => {},
+        }),
+      ).rejects.toMatchObject({ name: 'LlmError', httpStatus: 504 });
+    });
+  });
 });

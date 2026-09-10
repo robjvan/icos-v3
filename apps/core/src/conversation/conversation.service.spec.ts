@@ -5,8 +5,9 @@ import {
 } from '@nestjs/common';
 import { CoreConfig } from '../config';
 import { LlmClient, LlmError } from '../llm/llm.client';
-import type { ChatMessage, ChatResult } from '../llm/llm.client';
+import type { ChatMessage, ChatResult, StreamSink } from '../llm/llm.client';
 import { ConversationService } from './conversation.service';
+import type { ConversationStreamEvent } from './conversation.service';
 import { SessionStore } from './session.store';
 
 const config: CoreConfig = {
@@ -19,14 +20,32 @@ const config: CoreConfig = {
 };
 
 type ChatFn = (messages: ChatMessage[]) => Promise<ChatResult>;
+type ChatStreamFn = (
+  messages: ChatMessage[],
+  sink: StreamSink,
+  signal?: AbortSignal,
+) => Promise<ChatResult>;
 
-function setup(chatImpl?: ChatFn) {
+function setup(chatImpl?: ChatFn, chatStreamImpl?: ChatStreamFn) {
   const store = new SessionStore(config);
   const chat = jest.fn<Promise<ChatResult>, [ChatMessage[]]>(
     chatImpl ?? (() => Promise.resolve({ content: 'hi back', model: 'm' })),
   );
-  const llm = { chat } as unknown as LlmClient;
-  return { service: new ConversationService(store, llm, config), store, chat };
+  const chatStream = jest.fn<Promise<ChatResult>, [ChatMessage[], StreamSink]>(
+    chatStreamImpl ??
+      ((_messages, sink) => {
+        sink.onToken('hi ');
+        sink.onToken('back');
+        return Promise.resolve({ content: 'hi back', model: 'm' });
+      }),
+  );
+  const llm = { chat, chatStream } as unknown as LlmClient;
+  return {
+    service: new ConversationService(store, llm, config),
+    store,
+    chat,
+    chatStream,
+  };
 }
 
 describe('ConversationService', () => {
@@ -87,5 +106,51 @@ describe('ConversationService', () => {
     expect(() =>
       service.history('00000000-0000-0000-0000-000000000000'),
     ).toThrow(NotFoundException);
+  });
+
+  describe('converseStream', () => {
+    it('emits meta, tokens, done in order and stores history', async () => {
+      const { service, store } = setup();
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream('hello', undefined, (event) =>
+        events.push(event),
+      );
+
+      expect(events[0]).toMatchObject({ type: 'meta' });
+      const sessionId =
+        events[0].type === 'meta' ? events[0].sessionId : undefined;
+      expect(events.slice(1, -1)).toEqual([
+        { type: 'token', content: 'hi ' },
+        { type: 'token', content: 'back' },
+      ]);
+      expect(events[events.length - 1]).toEqual({
+        type: 'done',
+        reply: 'hi back',
+        model: 'm',
+      });
+      expect(sessionId).toBeDefined();
+      expect(store.get(sessionId ?? '')).toEqual([
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'hi back' },
+      ]);
+    });
+
+    it('emits error and stores nothing when the LLM fails', async () => {
+      const { service, store } = setup(undefined, () =>
+        Promise.reject(new LlmError(502, 'boom', false)),
+      );
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream('hello', undefined, (event) =>
+        events.push(event),
+      );
+
+      expect(events[0]?.type).toBe('meta');
+      expect(events[1]).toMatchObject({ type: 'error', message: 'boom' });
+      expect(events).toHaveLength(2);
+      const sessionId = events[0].type === 'meta' ? events[0].sessionId : '';
+      expect(store.get(sessionId)).toEqual([]);
+    });
   });
 });

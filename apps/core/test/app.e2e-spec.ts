@@ -11,6 +11,21 @@ describe('Conversation (e2e)', () => {
   const chat = jest.fn(() =>
     Promise.resolve({ content: 'mock reply', model: 'test-model' }),
   );
+  let streamFails = false;
+  const chatStream = jest.fn(
+    (
+      messages: unknown,
+      sink: { onToken: (content: string) => void },
+    ): Promise<{ content: string; model: string }> => {
+      void messages;
+      if (streamFails) {
+        return Promise.reject(new Error('upstream boom'));
+      }
+      sink.onToken('mock ');
+      sink.onToken('reply');
+      return Promise.resolve({ content: 'mock reply', model: 'test-model' });
+    },
+  );
 
   interface ConversationResponse {
     sessionId: string;
@@ -26,6 +41,8 @@ describe('Conversation (e2e)', () => {
   beforeEach(async () => {
     chat.mockClear();
     chat.mockResolvedValue({ content: 'mock reply', model: 'test-model' });
+    chatStream.mockClear();
+    streamFails = false;
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [CoreModule],
@@ -40,7 +57,7 @@ describe('Conversation (e2e)', () => {
         maxHistory: 50,
       })
       .overrideProvider(LlmClient)
-      .useValue({ chat })
+      .useValue({ chat, chatStream })
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -117,5 +134,35 @@ describe('Conversation (e2e)', () => {
     await request(app.getHttpServer())
       .get('/core/conversation/00000000-0000-0000-0000-000000000000')
       .expect(404);
+  });
+
+  it('POST /core/conversation/stream emits meta, tokens, done as SSE', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/core/conversation/stream')
+      .send({ message: 'hello' })
+      .expect(200)
+      .expect('Content-Type', /event-stream/);
+
+    expect(res.text).toContain('event: meta');
+    expect(res.text).toContain('event: token');
+    expect(res.text).toContain('event: done');
+    expect(res.text).toContain('"content":"mock "');
+    expect(res.text).toContain('"reply":"mock reply"');
+    expect(chatStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /core/conversation/stream emits an error event on failure', async () => {
+    streamFails = true;
+
+    const res = await request(app.getHttpServer())
+      .post('/core/conversation/stream')
+      .send({ message: 'hello' })
+      .expect(200)
+      .expect('Content-Type', /event-stream/);
+
+    expect(res.text).toContain('event: meta');
+    expect(res.text).toContain('event: error');
+    expect(res.text).toContain('upstream boom');
+    expect(res.text).not.toContain('event: done');
   });
 });

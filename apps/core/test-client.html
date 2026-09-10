@@ -217,11 +217,11 @@
       async function sendMessage(message) {
         setBusy(true);
 
-        const typing = addMessage('assistant', 'Thinking...');
-        typing.classList.add('typing');
+        const bubble = addMessage('assistant', 'Thinking...');
+        bubble.classList.add('typing');
 
         try {
-          const response = await fetch('/core/conversation', {
+          const response = await fetch('/core/conversation/stream', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -232,26 +232,98 @@
             }),
           });
 
-          const data = await response.json();
+          if (!response.ok || !response.body) {
+            let detail = `HTTP ${response.status}`;
 
-          if (!response.ok) {
-            throw new Error(data.message || `HTTP ${response.status}`);
+            try {
+              const data = await response.json();
+              detail = data.message || detail;
+            } catch {
+              // Non-JSON error body; keep the status text.
+            }
+
+            throw new Error(detail);
           }
 
-          sessionId = data.sessionId;
-
-          session.textContent = sessionId;
-
-          typing.remove();
-
-          addMessage('assistant', data.reply);
+          await readStream(response.body, bubble);
         } catch (error) {
-          typing.remove();
+          bubble.remove();
 
           addMessage('system', `Error: ${error.message}`);
         } finally {
           setBusy(false);
           input.focus();
+        }
+      }
+
+      async function readStream(body, bubble) {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        const state = { started: false };
+
+        let buffer = '';
+
+        for (;;) {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+
+          let boundary = buffer.indexOf('\n\n');
+
+          while (boundary >= 0) {
+            handleEvent(buffer.slice(0, boundary), bubble, state);
+
+            buffer = buffer.slice(boundary + 2);
+            boundary = buffer.indexOf('\n\n');
+          }
+        }
+      }
+
+      function handleEvent(raw, bubble, state) {
+        let name = '';
+        let data = '';
+
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) {
+            name = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            data += line.slice(5).trim();
+          }
+        }
+
+        if (!name || !data) {
+          return;
+        }
+
+        const payload = JSON.parse(data);
+
+        if (name === 'meta') {
+          sessionId = payload.sessionId;
+          session.textContent = sessionId;
+        }
+
+        if (name === 'token') {
+          if (!state.started) {
+            state.started = true;
+            bubble.textContent = '';
+            bubble.classList.remove('typing');
+          }
+
+          bubble.textContent += payload.content;
+          messages.scrollTop = messages.scrollHeight;
+        }
+
+        if (name === 'done' && !bubble.textContent) {
+          bubble.classList.remove('typing');
+          bubble.textContent = payload.reply;
+        }
+
+        if (name === 'error') {
+          throw new Error(payload.message);
         }
       }
 
