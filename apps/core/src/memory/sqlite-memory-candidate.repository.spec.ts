@@ -10,6 +10,7 @@ import { SqliteMemoryCandidateRepository } from './sqlite-memory-candidate.repos
 function testConfig(memoryDbPath: string, dir: string): CoreConfig {
   return {
     port: 3000,
+    provider: 'ollama',
     llmBaseUrl: 'http://localhost:11434/v1',
     llmModel: 'm',
     llmTimeoutMs: 1000,
@@ -19,6 +20,7 @@ function testConfig(memoryDbPath: string, dir: string): CoreConfig {
     memoryDbPath,
     legacyDbPath: join(dir, 'legacy-missing.sqlite'),
     memoryExtractionEnabled: true,
+    memoryProvider: 'ollama',
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'mem',
     memoryLlmTimeoutMs: 1000,

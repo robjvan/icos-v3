@@ -65,4 +65,53 @@ describe('loadConfig', () => {
       resolve(process.cwd(), './custom/legacy.sqlite'),
     );
   });
+
+  it('defaults the provider to ollama and normalizes overrides', () => {
+    expect(loadConfig({ LLM_MODEL: 'm' }).provider).toBe('ollama');
+    expect(
+      loadConfig({ LLM_MODEL: 'm', LLM_PROVIDER: 'OpenRouter' }).provider,
+    ).toBe('openrouter');
+  });
+
+  it('parses static headers and rejects malformed values', () => {
+    expect(loadConfig({ LLM_MODEL: 'm' }).llmHeaders).toBeUndefined();
+    expect(
+      loadConfig({
+        LLM_MODEL: 'm',
+        LLM_HEADERS: '{"HTTP-Referer":"https://example.com"}',
+      }).llmHeaders,
+    ).toEqual({ 'HTTP-Referer': 'https://example.com' });
+    expect(() =>
+      loadConfig({ LLM_MODEL: 'm', LLM_HEADERS: 'not-json' }),
+    ).toThrow(/LLM_HEADERS/);
+    expect(() =>
+      loadConfig({ LLM_MODEL: 'm', LLM_HEADERS: '{"a":42}' }),
+    ).toThrow(/LLM_HEADERS/);
+  });
+
+  it('leaves the User-Agent unset unless configured', () => {
+    expect(loadConfig({ LLM_MODEL: 'm' }).userAgent).toBeUndefined();
+    expect(
+      loadConfig({ LLM_MODEL: 'm', LLM_USER_AGENT: 'my-agent/2.0' }).userAgent,
+    ).toBe('my-agent/2.0');
+  });
+
+  it('mirrors provider, headers, and UA into the memory role by default', () => {
+    const config = loadConfig({
+      LLM_MODEL: 'm',
+      LLM_PROVIDER: 'opencode',
+      LLM_HEADERS: '{"X-Title":"t"}',
+      LLM_USER_AGENT: 'my-agent/2.0',
+    });
+    expect(config.memoryProvider).toBe('opencode');
+    expect(config.memoryLlmHeaders).toEqual({ 'X-Title': 't' });
+    expect(config.memoryUserAgent).toBe('my-agent/2.0');
+
+    const overridden = loadConfig({
+      LLM_MODEL: 'm',
+      LLM_PROVIDER: 'opencode',
+      MEMORY_PROVIDER: 'ollama',
+    });
+    expect(overridden.memoryProvider).toBe('ollama');
+  });
 });

@@ -5,9 +5,12 @@ export const CORE_CONFIG = 'CORE_CONFIG';
 
 export interface CoreConfig {
   port: number;
+  provider: string;
   llmBaseUrl: string;
   llmModel: string;
   llmApiKey?: string;
+  llmHeaders?: Record<string, string>;
+  userAgent?: string;
   llmTimeoutMs: number;
   systemPrompt: string;
   maxHistory: number;
@@ -20,9 +23,12 @@ export interface CoreConfig {
    */
   legacyDbPath: string;
   memoryExtractionEnabled: boolean;
+  memoryProvider: string;
   memoryLlmBaseUrl: string;
   memoryLlmModel: string;
   memoryLlmApiKey?: string;
+  memoryLlmHeaders?: Record<string, string>;
+  memoryUserAgent?: string;
   memoryLlmTimeoutMs: number;
 }
 
@@ -52,9 +58,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
 
   return {
     port: parsePositiveInt(env.PORT, 3000, 'PORT'),
+    provider: (env.LLM_PROVIDER ?? 'ollama').trim().toLowerCase() || 'ollama',
     llmBaseUrl,
     llmModel,
     llmApiKey: (env.LLM_API_KEY ?? '').trim() || undefined,
+    llmHeaders: parseHeaders(env.LLM_HEADERS, 'LLM_HEADERS'),
+    userAgent: (env.LLM_USER_AGENT ?? '').trim() || undefined,
     llmTimeoutMs: parsePositiveInt(env.LLM_TIMEOUT_MS, 60000, 'LLM_TIMEOUT_MS'),
     systemPrompt:
       (env.SYSTEM_PROMPT ?? 'You are Isabel, a helpful assistant.').trim() ||
@@ -66,12 +75,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
     memoryExtractionEnabled: parseBoolean(env.MEMORY_EXTRACTION_ENABLED, true),
     // Each falls back to its primary counterpart: the extraction role has
     // an explicit boundary (own client, own values) with zero-config default.
+    memoryProvider:
+      (env.MEMORY_PROVIDER ?? '').trim().toLowerCase() ||
+      (env.LLM_PROVIDER ?? 'ollama').trim().toLowerCase() ||
+      'ollama',
     memoryLlmBaseUrl: (env.MEMORY_LLM_BASE_URL ?? llmBaseUrl)
       .trim()
       .replace(/\/+$/, ''),
     memoryLlmModel: (env.MEMORY_LLM_MODEL ?? '').trim() || llmModel,
     memoryLlmApiKey:
       (env.MEMORY_LLM_API_KEY ?? env.LLM_API_KEY ?? '').trim() || undefined,
+    memoryLlmHeaders: parseHeaders(
+      env.MEMORY_LLM_HEADERS ?? env.LLM_HEADERS,
+      'MEMORY_LLM_HEADERS',
+    ),
+    memoryUserAgent:
+      (env.MEMORY_USER_AGENT ?? env.LLM_USER_AGENT ?? '').trim() || undefined,
     memoryLlmTimeoutMs: parsePositiveInt(
       env.MEMORY_LLM_TIMEOUT_MS,
       60000,
@@ -86,6 +105,35 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
   if (value === 'true' || value === '1' || value === 'yes') return true;
   if (value === 'false' || value === '0' || value === 'no') return false;
   throw new Error(`Expected a boolean (got "${raw}")`);
+}
+
+/**
+ * Arbitrary static headers from a JSON object string, e.g.
+ * `{"HTTP-Referer": "https://example.com", "X-Title": "My App"}`.
+ * Keys/values must be non-empty strings.
+ */
+function parseHeaders(
+  raw: string | undefined,
+  name: string,
+): Record<string, string> | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`${name} must be a JSON object of string values`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON object of string values`);
+  }
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!key.trim() || typeof value !== 'string' || !value.trim()) {
+      throw new Error(`${name} must be a JSON object of string values`);
+    }
+    headers[key.trim()] = value.trim();
+  }
+  return headers;
 }
 
 function resolvePath(raw: string | undefined, fallback: string): string {

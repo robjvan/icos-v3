@@ -10,6 +10,7 @@ import { SqliteSessionRepository } from './sqlite-session.repository';
 function testConfig(sessionDbPath: string, dir: string): CoreConfig {
   return {
     port: 3000,
+    provider: 'ollama',
     llmBaseUrl: 'http://localhost:11434/v1',
     llmModel: 'm',
     llmTimeoutMs: 1000,
@@ -19,6 +20,7 @@ function testConfig(sessionDbPath: string, dir: string): CoreConfig {
     memoryDbPath: join(dir, 'mem-unused.sqlite'),
     legacyDbPath: join(dir, 'legacy-missing.sqlite'),
     memoryExtractionEnabled: false,
+    memoryProvider: 'ollama',
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'm',
     memoryLlmTimeoutMs: 1000,

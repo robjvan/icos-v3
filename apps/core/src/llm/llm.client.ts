@@ -1,5 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CORE_CONFIG } from '../config';
+import { buildRequestHeaders } from './llm-provider';
+import type { LlmChatRequest } from './llm-provider';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -10,11 +12,19 @@ export interface ChatMessage {
  * Narrow endpoint config. The client never sees roles, prompts, or
  * Core-wide settings — any model role (conversation, extraction,
  * sentinel) gets its own instance with its own values.
+ *
+ * `provider` is a plain label (ollama, llama.cpp, openrouter,
+ * opencode, ...) with exactly one behavioral effect: the id
+ * `opencode` opts into session-affinity headers. Everything else is
+ * uniform OpenAI-compatible transport.
  */
 export interface LlmEndpointConfig {
+  provider: string;
   llmBaseUrl: string;
   llmModel: string;
   llmApiKey?: string;
+  headers?: Record<string, string>;
+  userAgent?: string;
   llmTimeoutMs: number;
 }
 
@@ -65,10 +75,11 @@ export class LlmClient {
   ) {}
 
   buildUrl(): string {
-    return `${this.config.llmBaseUrl}/chat/completions`;
+    return `${this.config.llmBaseUrl}`;
   }
 
-  async chat(messages: ChatMessage[]): Promise<ChatResult> {
+  async chat(request: LlmChatRequest): Promise<ChatResult> {
+    const { messages } = request;
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(),
@@ -79,7 +90,9 @@ export class LlmClient {
       try {
         res = await fetch(this.buildUrl(), {
           method: 'POST',
-          headers: this.buildHeaders(),
+          headers: buildRequestHeaders(this.config, {
+            sessionId: request.sessionId,
+          }),
           body: JSON.stringify({
             model: this.config.llmModel,
             messages,
@@ -88,7 +101,7 @@ export class LlmClient {
           signal: controller.signal,
         });
       } catch (err) {
-        throw new LlmError(
+        throw this.providerError(
           504,
           `LLM endpoint unreachable or timed out after ${this.config.llmTimeoutMs}ms`,
           true,
@@ -97,7 +110,7 @@ export class LlmClient {
       }
       if (!res.ok) {
         const snippet = await this.readBodySnippet(res);
-        throw new LlmError(
+        throw this.providerError(
           502,
           `LLM endpoint returned ${res.status}: ${snippet}`,
           res.status >= 500,
@@ -106,7 +119,7 @@ export class LlmClient {
       const data = (await res.json()) as ChatCompletionsResponse;
       const content = data.choices?.[0]?.message?.content?.trim();
       if (!content) {
-        throw new LlmError(
+        throw this.providerError(
           502,
           'LLM endpoint returned no content (empty choices)',
           false,
@@ -123,10 +136,11 @@ export class LlmClient {
    * `clientSignal` aborts the upstream request (e.g. browser disconnected).
    */
   async chatStream(
-    messages: ChatMessage[],
+    request: LlmChatRequest,
     sink: StreamSink,
     clientSignal?: AbortSignal,
   ): Promise<ChatResult> {
+    const { messages } = request;
     const timeout = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -140,7 +154,9 @@ export class LlmClient {
       try {
         res = await fetch(this.buildUrl(), {
           method: 'POST',
-          headers: this.buildHeaders(),
+          headers: buildRequestHeaders(this.config, {
+            sessionId: request.sessionId,
+          }),
           body: JSON.stringify({
             model: this.config.llmModel,
             messages,
@@ -153,7 +169,7 @@ export class LlmClient {
       }
       if (!res.ok) {
         const snippet = await this.readBodySnippet(res);
-        throw new LlmError(
+        throw this.providerError(
           502,
           `LLM endpoint returned ${res.status}: ${snippet}`,
           res.status >= 500,
@@ -161,7 +177,11 @@ export class LlmClient {
       }
       try {
         if (!res.body) {
-          throw new LlmError(502, 'LLM endpoint returned an empty body', true);
+          throw this.providerError(
+            502,
+            'LLM endpoint returned an empty body',
+            true,
+          );
         }
         return await this.pumpStream(res.body, sink);
       } catch (err) {
@@ -174,16 +194,31 @@ export class LlmClient {
     }
   }
 
+  /** Tag errors with the provider id. Never include credentials. */
+  private providerError(
+    httpStatus: 502 | 504,
+    message: string,
+    retryable: boolean,
+    cause?: unknown,
+  ): LlmError {
+    return new LlmError(
+      httpStatus,
+      `[${this.config.provider}] ${message}`,
+      retryable,
+      cause,
+    );
+  }
+
   private abortError(cause: unknown, timedOut: boolean): LlmError {
     if (timedOut) {
-      return new LlmError(
+      return this.providerError(
         504,
         `LLM endpoint timed out after ${this.config.llmTimeoutMs}ms`,
         true,
         cause,
       );
     }
-    return new LlmError(504, 'LLM request aborted', false, cause);
+    return this.providerError(504, 'LLM request aborted', false, cause);
   }
 
   private async pumpStream(
@@ -211,7 +246,11 @@ export class LlmClient {
       reader.releaseLock();
     }
     if (!state.content) {
-      throw new LlmError(502, 'LLM endpoint returned an empty stream', false);
+      throw this.providerError(
+        502,
+        'LLM endpoint returned an empty stream',
+        false,
+      );
     }
     return { content: state.content, model: state.model };
   }
@@ -237,16 +276,6 @@ export class LlmClient {
       state.content += delta;
       sink.onToken(delta);
     }
-  }
-
-  private buildHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (this.config.llmApiKey) {
-      headers['Authorization'] = `Bearer ${this.config.llmApiKey}`;
-    }
-    return headers;
   }
 
   private async readBodySnippet(res: Response): Promise<string> {

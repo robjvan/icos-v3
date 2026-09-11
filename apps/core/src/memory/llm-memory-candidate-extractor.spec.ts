@@ -1,4 +1,5 @@
 import { LlmClient } from '../llm/llm.client';
+import type { LlmChatRequest } from '../llm/llm-provider';
 import { EXTRACTION_VERSION, buildExtractionPrompt } from './extraction.prompt';
 import {
   ExtractionParseError,
@@ -16,9 +17,12 @@ const input: MemoryExtractionInput = {
   ],
 };
 
-function extractorWith(response: string, onPrompt?: (prompt: unknown) => void) {
-  const chat = jest.fn((prompt: unknown) => {
-    onPrompt?.(prompt);
+function extractorWith(
+  response: string,
+  onRequest?: (request: LlmChatRequest) => void,
+) {
+  const chat = jest.fn((request: LlmChatRequest) => {
+    onRequest?.(request);
     return Promise.resolve({ content: response, model: 'm' });
   });
   const llm = { chat } as unknown as LlmClient;
@@ -100,6 +104,16 @@ describe('LlmMemoryCandidateExtractor', () => {
     } as unknown as LlmClient;
     const extractor = new LlmMemoryCandidateExtractor(llm);
     await expect(extractor.extract(input)).rejects.toThrow('down');
+  });
+
+  it('forwards the conversation session id to the LLM request', async () => {
+    let seen: LlmChatRequest | undefined;
+    const { extractor } = extractorWith('[]', (request) => {
+      seen = request;
+    });
+    await extractor.extract(input);
+    expect(seen?.sessionId).toBe('s1');
+    expect(seen?.messages.length).toBeGreaterThan(0);
   });
 
   it('records the extraction version constant', () => {

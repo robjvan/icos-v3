@@ -8,6 +8,7 @@ function makeStore(maxHistory = 50): {
 } {
   const config: CoreConfig = {
     port: 3000,
+    provider: 'ollama',
     llmBaseUrl: 'http://localhost:11434/v1',
     llmModel: 'm',
     llmTimeoutMs: 1000,
@@ -17,6 +18,7 @@ function makeStore(maxHistory = 50): {
     memoryDbPath: ':memory:',
     legacyDbPath: '/tmp/icos-test-legacy-missing.sqlite',
     memoryExtractionEnabled: false,
+    memoryProvider: 'ollama',
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'm',
     memoryLlmTimeoutMs: 1000,

@@ -30,7 +30,10 @@ export class LlmMemoryCandidateExtractor extends MemoryCandidateExtractor {
   }
 
   async extract(input: MemoryExtractionInput): Promise<ValidatedCandidate[]> {
-    const { content } = await this.llm.chat(buildExtractionPrompt(input));
+    const { content } = await this.llm.chat({
+      messages: buildExtractionPrompt(input),
+      sessionId: input.sessionId,
+    });
     return validateCandidates(extractJson(content));
   }
 }

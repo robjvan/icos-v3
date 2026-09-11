@@ -52,7 +52,10 @@ export class ConversationService {
     // tools and feed observations back into the loop.
 
     try {
-      const { content, model } = await this.llm.chat(messages);
+      const { content, model } = await this.llm.chat({
+        messages,
+        sessionId: id,
+      });
       const userRecord = await this.sessions.append(id, {
         role: 'user',
         content: message,
@@ -108,7 +111,7 @@ export class ConversationService {
     emit({ type: 'meta', sessionId: id, model: this.config.llmModel });
     try {
       const { content, model } = await this.llm.chatStream(
-        messages,
+        { messages, sessionId: id },
         { onToken: (token) => emit({ type: 'token', content: token }) },
         clientSignal,
       );

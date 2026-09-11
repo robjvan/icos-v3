@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { coreConfigProvider } from '../config';
-import { LlmClient } from '../llm/llm.client';
-import { memoryLlmClientProvider } from '../llm/llm-client.providers';
+import {
+  conversationLlmClientProvider,
+  memoryLlmClientProvider,
+} from '../llm/llm-client.providers';
 import { LlmMemoryCandidateExtractor } from '../memory/llm-memory-candidate-extractor';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
@@ -39,9 +41,9 @@ import { SessionsController } from './sessions.controller';
       useClass: LlmMemoryCandidateExtractor,
     },
     memoryLlmClientProvider,
+    conversationLlmClientProvider,
     ConversationService,
     SessionStore,
-    LlmClient,
   ],
   exports: [ConversationService],
 })

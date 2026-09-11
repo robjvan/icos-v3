@@ -1,9 +1,13 @@
-import { ChatMessage, LlmClient } from './llm.client';
-import { CoreConfig } from '../config';
+import type { CoreConfig } from '../config';
+import { LlmClient } from './llm.client';
+import type { ChatMessage } from './llm.client';
+import { conversationEndpointConfig } from './llm-client.providers';
+import { defaultUserAgent } from './llm-provider';
 
 const baseConfig: CoreConfig = {
   port: 3000,
-  llmBaseUrl: 'http://localhost:11434/v1',
+  provider: 'ollama',
+  llmBaseUrl: 'http://localhost:11434/v1/chat/completions',
   llmModel: 'test-model',
   llmTimeoutMs: 1000,
   systemPrompt: 'sys',
@@ -12,13 +16,16 @@ const baseConfig: CoreConfig = {
   memoryDbPath: ':memory:',
   legacyDbPath: '/tmp/icos-test-legacy-missing.sqlite',
   memoryExtractionEnabled: false,
-  memoryLlmBaseUrl: 'http://localhost:11434/v1',
+  memoryProvider: 'ollama',
+  memoryLlmBaseUrl: 'http://localhost:11434/v1/chat/completions',
   memoryLlmModel: 'test-model',
   memoryLlmTimeoutMs: 1000,
 };
 
 function clientWith(overrides: Partial<CoreConfig> = {}): LlmClient {
-  return new LlmClient({ ...baseConfig, ...overrides });
+  return new LlmClient(
+    conversationEndpointConfig({ ...baseConfig, ...overrides }),
+  );
 }
 
 function okResponse(body: unknown, status = 200): Response {
@@ -36,7 +43,7 @@ describe('LlmClient', () => {
     jest.restoreAllMocks();
   });
 
-  it('POSTs model + messages to {baseUrl}/chat/completions and returns content', async () => {
+  it('POSTs model + messages to {baseUrl} and returns content', async () => {
     const messages: ChatMessage[] = [{ role: 'user', content: 'hi' }];
     const fetchMock = jest.fn(() =>
       Promise.resolve(
@@ -48,7 +55,7 @@ describe('LlmClient', () => {
     );
     global.fetch = fetchMock;
 
-    const result = await clientWith().chat(messages);
+    const result = await clientWith().chat({ messages });
 
     expect(result).toEqual({ content: 'hello there', model: 'test-model' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -79,22 +86,55 @@ describe('LlmClient', () => {
       );
     };
 
-    await clientWith().chat([{ role: 'user', content: 'hi' }]);
+    await clientWith().chat({ messages: [{ role: 'user', content: 'hi' }] });
     expect(seen[0]?.headers).not.toHaveProperty('Authorization');
 
-    await clientWith({ llmApiKey: 'secret' }).chat([
-      { role: 'user', content: 'hi' },
-    ]);
+    await clientWith({ llmApiKey: 'secret' }).chat({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
     expect(seen[1]?.headers).toMatchObject({
       Authorization: 'Bearer secret',
     });
+  });
+
+  it('sends a stable application User-Agent by default', async () => {
+    const seen: RequestInit[] = [];
+    global.fetch = (_url: unknown, init?: RequestInit) => {
+      seen.push(init ?? {});
+      return Promise.resolve(
+        okResponse({ choices: [{ message: { content: 'x' } }] }),
+      );
+    };
+
+    await clientWith().chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(seen[0]?.headers).toMatchObject({
+      'User-Agent': defaultUserAgent(),
+    });
+    expect(defaultUserAgent()).toMatch(/^icos\//);
+
+    await clientWith({ userAgent: 'custom-agent/9.9' }).chat({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(seen[1]?.headers).toMatchObject({
+      'User-Agent': 'custom-agent/9.9',
+    });
+  });
+
+  it('tags errors with the provider id', async () => {
+    global.fetch = () => Promise.resolve(new Response('nope', { status: 401 }));
+
+    const err = await clientWith({ provider: 'openrouter' })
+      .chat({ messages: [{ role: 'user', content: 'hi' }] })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'LlmError', httpStatus: 502 });
+    expect((err as Error).message).toContain('[openrouter]');
   });
 
   it('throws 502 when the endpoint returns an error status', async () => {
     global.fetch = () => Promise.resolve(new Response('boom', { status: 500 }));
 
     const err = await clientWith()
-      .chat([{ role: 'user', content: 'hi' }])
+      .chat({ messages: [{ role: 'user', content: 'hi' }] })
       .catch((e: unknown) => e);
     expect(err).toMatchObject({ name: 'LlmError', httpStatus: 502 });
   });
@@ -103,7 +143,7 @@ describe('LlmClient', () => {
     global.fetch = () => Promise.resolve(okResponse({ choices: [] }));
 
     const err = await clientWith()
-      .chat([{ role: 'user', content: 'hi' }])
+      .chat({ messages: [{ role: 'user', content: 'hi' }] })
       .catch((e: unknown) => e);
     expect(err).toMatchObject({ name: 'LlmError', httpStatus: 502 });
   });
@@ -114,7 +154,7 @@ describe('LlmClient', () => {
     };
 
     const err = await clientWith()
-      .chat([{ role: 'user', content: 'hi' }])
+      .chat({ messages: [{ role: 'user', content: 'hi' }] })
       .catch((e: unknown) => e);
     expect(err).toMatchObject({ name: 'LlmError', httpStatus: 504 });
   });
@@ -155,7 +195,7 @@ describe('LlmClient', () => {
       const tokens: string[] = [];
 
       const result = await clientWith().chatStream(
-        [{ role: 'user', content: 'hi' }],
+        { messages: [{ role: 'user', content: 'hi' }] },
         { onToken: (token) => tokens.push(token) },
       );
 
@@ -182,7 +222,7 @@ describe('LlmClient', () => {
       const tokens: string[] = [];
 
       const result = await clientWith().chatStream(
-        [{ role: 'user', content: 'hi' }],
+        { messages: [{ role: 'user', content: 'hi' }] },
         { onToken: (token) => tokens.push(token) },
       );
 
@@ -201,7 +241,7 @@ describe('LlmClient', () => {
         );
 
       const result = await clientWith().chatStream(
-        [{ role: 'user', content: 'hi' }],
+        { messages: [{ role: 'user', content: 'hi' }] },
         { onToken: () => {} },
       );
 
@@ -212,16 +252,18 @@ describe('LlmClient', () => {
       global.fetch = () =>
         Promise.resolve(new Response('boom', { status: 500 }));
       await expect(
-        clientWith().chatStream([{ role: 'user', content: 'hi' }], {
-          onToken: () => {},
-        }),
+        clientWith().chatStream(
+          { messages: [{ role: 'user', content: 'hi' }] },
+          { onToken: () => {} },
+        ),
       ).rejects.toMatchObject({ name: 'LlmError', httpStatus: 502 });
 
       global.fetch = () => Promise.resolve(sseResponse(['data: [DONE]\n\n']));
       await expect(
-        clientWith().chatStream([{ role: 'user', content: 'hi' }], {
-          onToken: () => {},
-        }),
+        clientWith().chatStream(
+          { messages: [{ role: 'user', content: 'hi' }] },
+          { onToken: () => {} },
+        ),
       ).rejects.toMatchObject({ name: 'LlmError', httpStatus: 502 });
     });
 
@@ -230,10 +272,150 @@ describe('LlmClient', () => {
         throw new DOMException('aborted', 'AbortError');
       };
       await expect(
-        clientWith().chatStream([{ role: 'user', content: 'hi' }], {
-          onToken: () => {},
-        }),
+        clientWith().chatStream(
+          { messages: [{ role: 'user', content: 'hi' }] },
+          { onToken: () => {} },
+        ),
       ).rejects.toMatchObject({ name: 'LlmError', httpStatus: 504 });
+    });
+  });
+
+  describe('provider session affinity', () => {
+    function captureFetch() {
+      const seen: RequestInit[] = [];
+      global.fetch = (_url: unknown, init?: RequestInit) => {
+        seen.push(init ?? {});
+        return Promise.resolve(
+          okResponse({ choices: [{ message: { content: 'x' } }] }),
+        );
+      };
+      return seen;
+    }
+
+    const messages: ChatMessage[] = [{ role: 'user', content: 'hi' }];
+
+    it('sends x-opencode-session for the opencode provider', async () => {
+      const seen = captureFetch();
+      const client = clientWith({ provider: 'opencode' });
+
+      await client.chat({ messages, sessionId: 'session-a' });
+      await client.chat({ messages, sessionId: 'session-a' });
+
+      expect(seen).toHaveLength(2);
+      expect(seen[0]?.headers).toMatchObject({
+        'x-opencode-session': 'session-a',
+      });
+      // Stable across requests in the same conversation.
+      expect(seen[1]?.headers).toMatchObject({
+        'x-opencode-session': 'session-a',
+      });
+    });
+
+    it('uses distinct session values for distinct conversations', async () => {
+      const seen = captureFetch();
+      const client = clientWith({ provider: 'opencode' });
+
+      await client.chat({ messages, sessionId: 'session-a' });
+      await client.chat({ messages, sessionId: 'session-b' });
+
+      expect(seen[0]?.headers).toMatchObject({
+        'x-opencode-session': 'session-a',
+      });
+      expect(seen[1]?.headers).toMatchObject({
+        'x-opencode-session': 'session-b',
+      });
+    });
+
+    it('matches the provider family case-insensitively', async () => {
+      const seen = captureFetch();
+
+      await clientWith({ provider: 'OpenCode' }).chat({
+        messages,
+        sessionId: 's',
+      });
+      expect(seen[0]?.headers).toMatchObject({ 'x-opencode-session': 's' });
+
+      const zenSeen = captureFetch();
+      await clientWith({ provider: 'opencode-zen' }).chat({
+        messages,
+        sessionId: 's',
+      });
+      expect(zenSeen[0]?.headers).toMatchObject({
+        'x-opencode-session': 's',
+      });
+    });
+
+    it('omits the session header without a session id', async () => {
+      const seen = captureFetch();
+
+      await clientWith({ provider: 'opencode' }).chat({ messages });
+
+      expect(seen[0]?.headers).not.toHaveProperty('x-opencode-session');
+    });
+
+    it('never sends the session header for other providers', async () => {
+      for (const provider of ['ollama', 'llama.cpp', 'openrouter', 'custom']) {
+        const seen = captureFetch();
+
+        await clientWith({ provider }).chat({ messages, sessionId: 's' });
+
+        expect(seen[0]?.headers).not.toHaveProperty('x-opencode-session');
+      }
+    });
+
+    it('sends the session header on streamed requests too', async () => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(tokenChunk('x') + 'data: [DONE]\n\n'),
+          );
+          controller.close();
+        },
+      });
+      const seen: RequestInit[] = [];
+      global.fetch = (_url: unknown, init?: RequestInit) => {
+        seen.push(init ?? {});
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          }),
+        );
+      };
+
+      function tokenChunk(content: string): string {
+        return `data: ${JSON.stringify({
+          choices: [{ delta: { content } }],
+        })}\n\n`;
+      }
+
+      await clientWith({ provider: 'opencode' }).chatStream(
+        { messages, sessionId: 'session-a' },
+        { onToken: () => {} },
+      );
+
+      expect(seen[0]?.headers).toMatchObject({
+        'x-opencode-session': 'session-a',
+      });
+    });
+
+    it('merges static headers, with explicit values winning', async () => {
+      const seen = captureFetch();
+
+      await clientWith({
+        provider: 'openrouter',
+        llmApiKey: 'secret',
+        llmHeaders: {
+          'HTTP-Referer': 'https://example.com',
+          Authorization: 'Bearer override',
+        },
+      }).chat({ messages });
+
+      expect(seen[0]?.headers).toMatchObject({
+        'HTTP-Referer': 'https://example.com',
+        Authorization: 'Bearer override',
+      });
     });
   });
 });

@@ -13,8 +13,8 @@ import { MemoryCandidateExtractor } from './../src/memory/memory-candidate-extra
 describe('Conversation (e2e)', () => {
   let app: INestApplication<App> | null = null;
   let dir = '';
-  const chat = jest.fn(() =>
-    Promise.resolve({ content: 'mock reply', model: 'test-model' }),
+  const chat = jest.fn<Promise<{ content: string; model: string }>, [unknown]>(
+    () => Promise.resolve({ content: 'mock reply', model: 'test-model' }),
   );
   let streamFails = false;
   let extractFails = false;
@@ -83,6 +83,7 @@ describe('Conversation (e2e)', () => {
       .overrideProvider(CORE_CONFIG)
       .useValue({
         port: 3000,
+        provider: 'ollama',
         llmBaseUrl: 'http://localhost:11434/v1',
         llmModel: 'test-model',
         llmTimeoutMs: 1000,
@@ -92,6 +93,7 @@ describe('Conversation (e2e)', () => {
         memoryDbPath,
         legacyDbPath: legacyDbPath ?? join(dir, 'legacy-missing.sqlite'),
         memoryExtractionEnabled: true,
+        memoryProvider: 'ollama',
         memoryLlmBaseUrl: 'http://localhost:11434/v1',
         memoryLlmModel: 'test-model',
         memoryLlmTimeoutMs: 1000,
@@ -149,6 +151,10 @@ describe('Conversation (e2e)', () => {
     expect(body.sessionId).toBeDefined();
     expect(body.reply).toBe('mock reply');
     expect(body.model).toBe('test-model');
+    // The ICOS session identity reaches the LLM request contract.
+    expect(chat.mock.calls[0][0]).toMatchObject({
+      sessionId: body.sessionId,
+    });
   });
 
   it('retains history across calls in the same session', async () => {

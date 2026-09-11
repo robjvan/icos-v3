@@ -6,7 +6,8 @@ import {
 } from '@nestjs/common';
 import type { CoreConfig } from '../config';
 import { LlmClient, LlmError } from '../llm/llm.client';
-import type { ChatMessage, ChatResult, StreamSink } from '../llm/llm.client';
+import type { ChatResult, StreamSink } from '../llm/llm.client';
+import type { LlmChatRequest } from '../llm/llm-provider';
 import { InvalidSearchQueryError } from '../session/session.repository';
 import type { ValidatedCandidate } from '../memory/memory-candidate';
 import type { NewMemoryCandidate } from '../memory/memory-candidate';
@@ -22,6 +23,7 @@ import { SessionStore } from './session.store';
 function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
   return {
     port: 3000,
+    provider: 'ollama',
     llmBaseUrl: 'http://localhost:11434/v1',
     llmModel: 'test-model',
     llmTimeoutMs: 1000,
@@ -31,6 +33,7 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
     memoryDbPath: ':memory:',
     legacyDbPath: '/tmp/icos-test-legacy-missing.sqlite',
     memoryExtractionEnabled: true,
+    memoryProvider: 'ollama',
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'test-model',
     memoryLlmTimeoutMs: 1000,
@@ -41,9 +44,9 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
 const flushMicrotasks = (): Promise<void> =>
   new Promise((resolve) => setImmediate(resolve));
 
-type ChatFn = (messages: ChatMessage[]) => Promise<ChatResult>;
+type ChatFn = (request: LlmChatRequest) => Promise<ChatResult>;
 type ChatStreamFn = (
-  messages: ChatMessage[],
+  request: LlmChatRequest,
   sink: StreamSink,
   signal?: AbortSignal,
 ) => Promise<ChatResult>;
@@ -60,10 +63,10 @@ function setup(
 ) {
   const repository = new FakeSessionRepository();
   const store = new SessionStore(repository, config);
-  const chat = jest.fn<Promise<ChatResult>, [ChatMessage[]]>(
+  const chat = jest.fn<Promise<ChatResult>, [LlmChatRequest]>(
     chatImpl ?? (() => Promise.resolve({ content: 'hi back', model: 'm' })),
   );
-  const chatStream = jest.fn<Promise<ChatResult>, [ChatMessage[], StreamSink]>(
+  const chatStream = jest.fn<Promise<ChatResult>, [LlmChatRequest, StreamSink]>(
     chatStreamImpl ??
       ((_messages, sink) => {
         sink.onToken('hi ');
@@ -111,8 +114,12 @@ describe('ConversationService', () => {
     expect(result.reply).toBe('hi back');
     expect(chat).toHaveBeenCalledTimes(1);
     const sent = chat.mock.calls[0][0];
-    expect(sent[0]).toEqual({ role: 'system', content: 'test-system' });
-    expect(sent[sent.length - 1]).toEqual({
+    expect(sent.sessionId).toBe(result.sessionId);
+    expect(sent.messages[0]).toEqual({
+      role: 'system',
+      content: 'test-system',
+    });
+    expect(sent.messages[sent.messages.length - 1]).toEqual({
       role: 'user',
       content: 'hello',
     });
@@ -128,7 +135,8 @@ describe('ConversationService', () => {
     await service.converse('second', first.sessionId);
 
     const secondCall = chat.mock.calls[1][0];
-    expect(secondCall.map((m) => m.content)).toEqual([
+    expect(secondCall.sessionId).toBe(first.sessionId);
+    expect(secondCall.messages.map((m) => m.content)).toEqual([
       'test-system',
       'first',
       'hi back',
@@ -151,7 +159,7 @@ describe('ConversationService', () => {
 
     const sent = chat.mock.calls[1][0];
     // system + last 5 stored + new input.
-    expect(sent.map((m) => m.content)).toEqual([
+    expect(sent.messages.map((m) => m.content)).toEqual([
       'test-system',
       'stored-5',
       'stored-6',
