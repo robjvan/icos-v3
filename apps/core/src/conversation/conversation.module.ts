@@ -3,6 +3,10 @@ import { coreConfigProvider } from '../config';
 import { ApprovalRepository } from '../approvals/approval.repository';
 import { ApprovalService } from '../approvals/approval.service';
 import { ApprovalsController } from '../approvals/approvals.controller';
+import { ClarificationRepository } from '../clarifications/clarification.repository';
+import { ClarificationService } from '../clarifications/clarification.service';
+import { ClarificationsController } from '../clarifications/clarifications.controller';
+import { SqliteClarificationRepository } from '../clarifications/sqlite-clarification.repository';
 import { SqliteApprovalRepository } from '../approvals/sqlite-approval.repository';
 import { CommandDispatcher } from '../commands/command-dispatcher';
 import { DisplayPreferenceStore } from '../commands/display-preferences';
@@ -31,6 +35,7 @@ import { SessionsController } from './sessions.controller';
     SessionsController,
     CandidatesController,
     ApprovalsController,
+    ClarificationsController,
   ],
   providers: [
     coreConfigProvider,
@@ -53,6 +58,11 @@ import { SessionsController } from './sessions.controller';
       useClass: SqliteApprovalRepository,
     },
     ApprovalService,
+    {
+      provide: ClarificationRepository,
+      useClass: SqliteClarificationRepository,
+    },
+    ClarificationService,
     memoryLlmClientProvider,
     conversationLlmClientProvider,
     DisplayPreferenceStore,

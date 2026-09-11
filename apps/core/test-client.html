@@ -111,6 +111,19 @@
         display: none;
       }
 
+      #questions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 12px;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+
+      #questions:empty {
+        display: none;
+      }
+
       .approval-card {
         border: 1px solid #8a6d3b;
         background: #26221a;
@@ -143,6 +156,61 @@
 
       .approval-card .reject {
         background: #6e3b3b;
+      }
+
+      .question-card {
+        border: 1px solid #4b7a94;
+        background: #1a2229;
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+
+      .question-card .question {
+        font-weight: 600;
+      }
+
+      .question-card .options {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      .question-card label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        cursor: pointer;
+      }
+
+      .question-card input[type='text'] {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border: 1px solid #444;
+        border-radius: 8px;
+        background: #111;
+        color: #eee;
+        font: inherit;
+        font-size: 13px;
+        width: 100%;
+        outline: none;
+      }
+
+      .question-card .row {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .question-card button {
+        width: auto;
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      .question-card .dismiss {
+        background: #555;
       }
 
       .composer {
@@ -331,6 +399,7 @@
           </main>
 
           <div id="approvals"></div>
+          <div id="questions"></div>
 
           <form class="composer" id="composer">
             <textarea
@@ -358,6 +427,7 @@
       const search = document.getElementById('search');
       const newButton = document.getElementById('new');
       const approvals = document.getElementById('approvals');
+      const questions = document.getElementById('questions');
 
       function shortId(id) {
         return id.slice(0, 8);
@@ -536,6 +606,139 @@
         await refreshApprovals();
       }
 
+      async function refreshQuestions() {
+        questions.replaceChildren();
+
+        if (!sessionId) {
+          return;
+        }
+
+        try {
+          const response = await fetch(
+            `/core/clarifications?sessionId=${encodeURIComponent(sessionId)}&status=pending`,
+          );
+
+          if (!response.ok) {
+            return;
+          }
+
+          const data = await response.json();
+
+          for (const q of data.clarifications) {
+            questions.appendChild(renderQuestion(q));
+          }
+        } catch {
+          // Questions are auxiliary; chat must keep working.
+        }
+      }
+
+      function renderQuestion(clarification) {
+        const card = document.createElement('div');
+        card.className = 'question-card';
+
+        const title = document.createElement('div');
+        title.className = 'question';
+        title.textContent = clarification.question;
+        card.appendChild(title);
+
+        let getAnswer;
+
+        if (clarification.options && clarification.options.length > 0) {
+          const options = document.createElement('div');
+          options.className = 'options';
+
+          const radios = [];
+
+          for (const option of clarification.options) {
+            const label = document.createElement('label');
+
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = `q-${clarification.id}`;
+            radio.value = option;
+
+            if (radios.length === 0) {
+              radio.checked = true;
+            }
+
+            radios.push(radio);
+            label.appendChild(radio);
+            label.appendChild(document.createTextNode(option));
+            options.appendChild(label);
+          }
+
+          card.appendChild(options);
+          getAnswer = () => {
+            const selected = radios.find((r) => r.checked);
+            return selected ? selected.value : '';
+          };
+        } else {
+          const field = document.createElement('input');
+          field.type = 'text';
+          field.placeholder = 'Your answer...';
+          card.appendChild(field);
+          getAnswer = () => field.value.trim();
+        }
+
+        const row = document.createElement('div');
+        row.className = 'row';
+
+        const submit = document.createElement('button');
+        submit.type = 'button';
+        submit.textContent = 'Answer';
+        submit.addEventListener('click', async () => {
+          const answer = getAnswer();
+
+          if (!answer) {
+            return;
+          }
+
+          await answerQuestion(clarification.id, answer);
+        });
+
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.textContent = 'Dismiss';
+        dismiss.className = 'dismiss';
+        dismiss.addEventListener('click', () =>
+          cancelQuestion(clarification.id),
+        );
+
+        row.appendChild(submit);
+        row.appendChild(dismiss);
+        card.appendChild(row);
+
+        return card;
+      }
+
+      async function answerQuestion(id, answer) {
+        try {
+          await fetch(`/core/clarifications/${id}/answer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, answer }),
+          });
+        } catch {
+          // Fall through to refresh; failures stay visible as pending.
+        }
+
+        await refreshQuestions();
+      }
+
+      async function cancelQuestion(id) {
+        try {
+          await fetch(`/core/clarifications/${id}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId }),
+          });
+        } catch {
+          // Fall through to refresh.
+        }
+
+        await refreshQuestions();
+      }
+
       async function openSession(id) {
         sessionId = id;
         session.textContent = id;
@@ -563,6 +766,7 @@
         }
 
         await refreshApprovals();
+        await refreshQuestions();
         markActive();
         input.focus();
       }
@@ -572,6 +776,7 @@
         session.textContent = 'new session';
         messages.replaceChildren();
         approvals.replaceChildren();
+        questions.replaceChildren();
         addMessage('system', 'New session.');
         markActive();
         input.focus();
@@ -735,6 +940,7 @@
         await sendMessage(message);
         await refreshSessions();
         await refreshApprovals();
+        await refreshQuestions();
       });
 
       // Enter sends.

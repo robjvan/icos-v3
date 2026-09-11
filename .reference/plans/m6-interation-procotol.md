@@ -1039,14 +1039,16 @@ Evidence: `.reference/plans/evidence/milestone-6b-evidence-approvals.md` (2026-0
 
 ## M6c
 
-* [ ] Clarification requests have explicit IDs and lifecycle state.
-* [ ] UI can display questions.
-* [ ] Free-form answers work.
-* [ ] Structured choices can work.
-* [ ] Answer resolves the correct pending request.
-* [ ] Runtime can resume after clarification.
-* [ ] Invalid state transitions are rejected.
-* [ ] Clarification behavior is tested.
+* [x] Clarification requests have explicit IDs and lifecycle state.
+* [x] UI can display questions.
+* [x] Free-form answers work.
+* [x] Structured choices can work.
+* [x] Answer resolves the correct pending request.
+* [x] Runtime can resume after clarification. (answer stored on request; task handoff for M8/M9)
+* [x] Invalid state transitions are rejected.
+* [x] Clarification behavior is tested.
+
+Evidence: `.reference/plans/evidence/milestone-6c-evidence-clarifications.md` (2026-09-11). M6 complete.
 
 ---
 

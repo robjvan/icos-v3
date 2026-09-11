@@ -655,4 +655,162 @@ describe('Conversation (e2e)', () => {
       ),
     ).toBe(true);
   });
+
+  it('clarifications run a full ask-to-answer lifecycle', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    const created = await request(http())
+      .post('/core/clarifications')
+      .send({
+        sessionId,
+        question: 'Which environment?',
+        options: ['dev', 'staging', 'prod'],
+      })
+      .expect(201);
+    const question = created.body as {
+      id: string;
+      status: string;
+      options: string[];
+    };
+    expect(question.status).toBe('pending');
+    expect(question.options).toEqual(['dev', 'staging', 'prod']);
+
+    const listed = await request(http())
+      .get('/core/clarifications')
+      .query({ sessionId, status: 'pending' })
+      .expect(200);
+    expect(
+      (listed.body as { clarifications: { id: string }[] }).clarifications.map(
+        (c) => c.id,
+      ),
+    ).toEqual([question.id]);
+
+    const answered = await request(http())
+      .post(`/core/clarifications/${question.id}/answer`)
+      .send({ sessionId, answer: 'staging' })
+      .expect(200);
+    expect(answered.body as object).toMatchObject({
+      status: 'answered',
+      answer: 'staging',
+    });
+
+    // The answer stays available to the pending task via the detail view.
+    const detail = await request(http())
+      .get(`/core/clarifications/${question.id}`)
+      .expect(200);
+    expect(detail.body as object).toMatchObject({
+      status: 'answered',
+      answer: 'staging',
+    });
+    expect(
+      (detail.body as { events: { event: string }[] }).events.map(
+        (e) => e.event,
+      ),
+    ).toEqual(['created', 'answered']);
+  });
+
+  it('clarifications reject bad answers, wrong sessions, and double answers', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+    const other = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const otherId = (other.body as ConversationResponse).sessionId;
+
+    const created = await request(http())
+      .post('/core/clarifications')
+      .send({
+        sessionId,
+        question: 'Which environment?',
+        options: ['dev', 'prod'],
+      })
+      .expect(201);
+    const id = (created.body as { id: string }).id;
+
+    // Off-option answer.
+    await request(http())
+      .post(`/core/clarifications/${id}/answer`)
+      .send({ sessionId, answer: 'qa' })
+      .expect(400);
+
+    // Wrong session binding.
+    await request(http())
+      .post(`/core/clarifications/${id}/answer`)
+      .send({ sessionId: otherId, answer: 'dev' })
+      .expect(400);
+
+    // Unknown clarification.
+    await request(http())
+      .post('/core/clarifications/00000000-0000-0000-0000-000000000000/answer')
+      .send({ sessionId, answer: 'dev' })
+      .expect(404);
+
+    await request(http())
+      .post(`/core/clarifications/${id}/answer`)
+      .send({ sessionId, answer: 'dev' })
+      .expect(200);
+    // Double answer conflicts.
+    await request(http())
+      .post(`/core/clarifications/${id}/answer`)
+      .send({ sessionId, answer: 'prod' })
+      .expect(409);
+
+    // Ordinary conversation never resolves the question, and the
+    // question never leaks into the transcript.
+    const free = await request(http())
+      .post('/core/clarifications')
+      .send({ sessionId, question: 'Which database?' })
+      .expect(201);
+    const freeId = (free.body as { id: string }).id;
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'the teal one', sessionId })
+      .expect(200);
+    const detail = await request(http())
+      .get(`/core/clarifications/${freeId}`)
+      .expect(200);
+    expect((detail.body as { status: string }).status).toBe('pending');
+    const history = await request(http())
+      .get(`/core/conversation/${sessionId}`)
+      .expect(200);
+    expect(
+      (history.body as HistoryResponse).messages.every(
+        (m) => !m.content.includes('Which database?'),
+      ),
+    ).toBe(true);
+  });
+
+  it('clarification creation validates options and sessions', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    // Unknown session.
+    await request(http())
+      .post('/core/clarifications')
+      .send({
+        sessionId: '00000000-0000-0000-0000-000000000000',
+        question: 'q?',
+      })
+      .expect(404);
+    // Degenerate option sets.
+    await request(http())
+      .post('/core/clarifications')
+      .send({ sessionId, question: 'q?', options: ['only'] })
+      .expect(400);
+    await request(http())
+      .post('/core/clarifications')
+      .send({ sessionId, question: 'q?', options: ['dup', 'dup'] })
+      .expect(400);
+  });
 });

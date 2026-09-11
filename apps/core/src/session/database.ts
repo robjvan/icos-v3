@@ -91,6 +91,41 @@ CREATE TABLE IF NOT EXISTS approval_events (
 
 CREATE INDEX IF NOT EXISTS idx_approval_events_approval
 ON approval_events(approval_id);
+
+CREATE TABLE IF NOT EXISTS clarifications (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    options TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    answer TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    resolved_at TEXT,
+
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_clarifications_session_status
+ON clarifications(session_id, status);
+
+CREATE TABLE IF NOT EXISTS clarification_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clarification_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (clarification_id)
+        REFERENCES clarifications(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_clarification_events_clarification
+ON clarification_events(clarification_id);
 `;
 
 /**
@@ -146,6 +181,8 @@ const SCHEMAS: Record<
       'messages_fts',
       'approvals',
       'approval_events',
+      'clarifications',
+      'clarification_events',
     ],
     triggers: ['messages_ai', 'messages_ad', 'messages_au'],
   },

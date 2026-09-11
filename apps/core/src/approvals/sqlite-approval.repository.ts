@@ -134,13 +134,19 @@ export class SqliteApprovalRepository extends ApprovalRepository {
     }
     const now = nowIso();
     const resolve = this.database.transaction(() => {
-      this.database
+      const info = this.database
         .prepare(
           `UPDATE approvals
               SET status = ?, updated_at = ?, resolved_at = ?
-            WHERE id = ?`,
+            WHERE id = ? AND status = 'pending'`,
         )
         .run(to, now, now, id);
+      if (info.changes === 0) {
+        const loser = this.database
+          .prepare('SELECT status FROM approvals WHERE id = ?')
+          .get(id) as { status: ApprovalStatus };
+        throw new InvalidApprovalTransitionError(id, loser.status, to);
+      }
       this.recordEvent(id, current.sessionId, to, now);
     });
     resolve();
