@@ -57,6 +57,40 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
     VALUES ('delete', old.id, old.content);
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    resolved_at TEXT,
+
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_session_status
+ON approvals(session_id, status);
+
+CREATE TABLE IF NOT EXISTS approval_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    approval_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+
+    FOREIGN KEY (approval_id)
+        REFERENCES approvals(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_events_approval
+ON approval_events(approval_id);
 `;
 
 /**
@@ -106,7 +140,13 @@ const SCHEMAS: Record<
 > = {
   sessions: {
     sql: SESSIONS_SCHEMA_SQL,
-    tables: ['sessions', 'messages', 'messages_fts'],
+    tables: [
+      'sessions',
+      'messages',
+      'messages_fts',
+      'approvals',
+      'approval_events',
+    ],
     triggers: ['messages_ai', 'messages_ad', 'messages_au'],
   },
   memories: {

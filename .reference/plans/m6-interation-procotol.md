@@ -1027,13 +1027,15 @@ Evidence: `.reference/plans/evidence/milestone-6a-evidence-commands.md` (2026-09
 
 ## M6b
 
-* [ ] Approval requests have explicit IDs and lifecycle state.
-* [ ] UI can display pending approvals.
-* [ ] User can approve/reject explicitly.
-* [ ] Approval state is deterministic.
-* [ ] LLM text cannot implicitly approve an action.
-* [ ] Invalid state transitions are rejected.
-* [ ] Approval behavior is tested.
+* [x] Approval requests have explicit IDs and lifecycle state.
+* [x] UI can display pending approvals.
+* [x] User can approve/reject explicitly.
+* [x] Approval state is deterministic.
+* [x] LLM text cannot implicitly approve an action.
+* [x] Invalid state transitions are rejected.
+* [x] Approval behavior is tested.
+
+Evidence: `.reference/plans/evidence/milestone-6b-evidence-approvals.md` (2026-09-11). M6c pending.
 
 ## M6c
 

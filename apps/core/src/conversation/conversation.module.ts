@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
 import { coreConfigProvider } from '../config';
+import { ApprovalRepository } from '../approvals/approval.repository';
+import { ApprovalService } from '../approvals/approval.service';
+import { ApprovalsController } from '../approvals/approvals.controller';
+import { SqliteApprovalRepository } from '../approvals/sqlite-approval.repository';
 import { CommandDispatcher } from '../commands/command-dispatcher';
 import { DisplayPreferenceStore } from '../commands/display-preferences';
 import { HostHealthProvider } from '../commands/host-health';
@@ -26,6 +30,7 @@ import { SessionsController } from './sessions.controller';
     ConversationController,
     SessionsController,
     CandidatesController,
+    ApprovalsController,
   ],
   providers: [
     coreConfigProvider,
@@ -43,6 +48,11 @@ import { SessionsController } from './sessions.controller';
       provide: MemoryCandidateExtractor,
       useClass: LlmMemoryCandidateExtractor,
     },
+    {
+      provide: ApprovalRepository,
+      useClass: SqliteApprovalRepository,
+    },
+    ApprovalService,
     memoryLlmClientProvider,
     conversationLlmClientProvider,
     DisplayPreferenceStore,

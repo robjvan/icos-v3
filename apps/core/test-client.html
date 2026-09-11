@@ -98,6 +98,53 @@
         opacity: 0.45;
       }
 
+      #approvals {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 12px;
+        max-height: 220px;
+        overflow-y: auto;
+      }
+
+      #approvals:empty {
+        display: none;
+      }
+
+      .approval-card {
+        border: 1px solid #8a6d3b;
+        background: #26221a;
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+
+      .approval-card .action {
+        font-weight: 600;
+      }
+
+      .approval-card .description {
+        color: #bbb;
+        margin-top: 4px;
+        white-space: pre-wrap;
+      }
+
+      .approval-card .row {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .approval-card button {
+        width: auto;
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      .approval-card .reject {
+        background: #6e3b3b;
+      }
+
       .composer {
         border-top: 1px solid #333;
         padding: 12px;
@@ -283,6 +330,8 @@
             <div class="message system">Core online.</div>
           </main>
 
+          <div id="approvals"></div>
+
           <form class="composer" id="composer">
             <textarea
               id="input"
@@ -308,6 +357,7 @@
       const sessions = document.getElementById('sessions');
       const search = document.getElementById('search');
       const newButton = document.getElementById('new');
+      const approvals = document.getElementById('approvals');
 
       function shortId(id) {
         return id.slice(0, 8);
@@ -404,6 +454,88 @@
         }
       }
 
+      async function refreshApprovals() {
+        approvals.replaceChildren();
+
+        if (!sessionId) {
+          return;
+        }
+
+        try {
+          const response = await fetch(
+            `/core/approvals?sessionId=${encodeURIComponent(sessionId)}&status=pending`,
+          );
+
+          if (!response.ok) {
+            return;
+          }
+
+          const data = await response.json();
+
+          for (const a of data.approvals) {
+            approvals.appendChild(renderApproval(a));
+          }
+        } catch {
+          // Approvals are auxiliary; chat must keep working.
+        }
+      }
+
+      function renderApproval(approval) {
+        const card = document.createElement('div');
+        card.className = 'approval-card';
+
+        const title = document.createElement('div');
+        title.className = 'action';
+        title.textContent = `Approval required: ${approval.action}`;
+
+        card.appendChild(title);
+
+        if (approval.description) {
+          const description = document.createElement('div');
+          description.className = 'description';
+          description.textContent = approval.description;
+          card.appendChild(description);
+        }
+
+        const row = document.createElement('div');
+        row.className = 'row';
+
+        const approve = document.createElement('button');
+        approve.type = 'button';
+        approve.textContent = 'Approve';
+        approve.addEventListener('click', () =>
+          resolveApproval(approval.id, 'approve'),
+        );
+
+        const reject = document.createElement('button');
+        reject.type = 'button';
+        reject.textContent = 'Reject';
+        reject.className = 'reject';
+        reject.addEventListener('click', () =>
+          resolveApproval(approval.id, 'reject'),
+        );
+
+        row.appendChild(approve);
+        row.appendChild(reject);
+        card.appendChild(row);
+
+        return card;
+      }
+
+      async function resolveApproval(id, decision) {
+        try {
+          await fetch(`/core/approvals/${id}/${decision}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId }),
+          });
+        } catch {
+          // Fall through to refresh; failures stay visible as pending.
+        }
+
+        await refreshApprovals();
+      }
+
       async function openSession(id) {
         sessionId = id;
         session.textContent = id;
@@ -430,6 +562,7 @@
           addMessage('system', `Error: ${error.message}`);
         }
 
+        await refreshApprovals();
         markActive();
         input.focus();
       }
@@ -438,6 +571,7 @@
         sessionId = null;
         session.textContent = 'new session';
         messages.replaceChildren();
+        approvals.replaceChildren();
         addMessage('system', 'New session.');
         markActive();
         input.focus();
@@ -600,6 +734,7 @@
 
         await sendMessage(message);
         await refreshSessions();
+        await refreshApprovals();
       });
 
       // Enter sends.

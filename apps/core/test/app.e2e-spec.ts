@@ -526,4 +526,133 @@ describe('Conversation (e2e)', () => {
       'third',
     ]);
   });
+
+  it('approvals run a full create-to-resolve lifecycle', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    const created = await request(http())
+      .post('/core/approvals')
+      .send({ sessionId, action: 'Run migration', description: 'Alters data' })
+      .expect(201);
+    const approval = created.body as { id: string; status: string };
+    expect(approval.status).toBe('pending');
+
+    const listed = await request(http())
+      .get('/core/approvals')
+      .query({ sessionId, status: 'pending' })
+      .expect(200);
+    expect(
+      (listed.body as { approvals: { id: string }[] }).approvals.map(
+        (a) => a.id,
+      ),
+    ).toEqual([approval.id]);
+
+    const approved = await request(http())
+      .post(`/core/approvals/${approval.id}/approve`)
+      .send({ sessionId })
+      .expect(200);
+    expect((approved.body as { status: string }).status).toBe('approved');
+
+    const detail = await request(http())
+      .get(`/core/approvals/${approval.id}`)
+      .expect(200);
+    expect(
+      (detail.body as { events: { event: string }[] }).events.map(
+        (e) => e.event,
+      ),
+    ).toEqual(['created', 'approved']);
+  });
+
+  it('approvals reject bad transitions, wrong sessions, and unknown ids', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+    const other = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const otherId = (other.body as ConversationResponse).sessionId;
+
+    const created = await request(http())
+      .post('/core/approvals')
+      .send({ sessionId, action: 'act' })
+      .expect(201);
+    const id = (created.body as { id: string }).id;
+
+    // Wrong session binding.
+    await request(http())
+      .post(`/core/approvals/${id}/approve`)
+      .send({ sessionId: otherId })
+      .expect(400);
+
+    // Unknown approval.
+    await request(http())
+      .post('/core/approvals/00000000-0000-0000-0000-000000000000/approve')
+      .send({ sessionId })
+      .expect(404);
+
+    // Double resolution conflicts.
+    await request(http())
+      .post(`/core/approvals/${id}/reject`)
+      .send({ sessionId })
+      .expect(200);
+    await request(http())
+      .post(`/core/approvals/${id}/approve`)
+      .send({ sessionId })
+      .expect(409);
+
+    // Unknown session on create.
+    await request(http())
+      .post('/core/approvals')
+      .send({
+        sessionId: '00000000-0000-0000-0000-000000000000',
+        action: 'act',
+      })
+      .expect(404);
+  });
+
+  it('assistant text can never approve a request', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    const created = await request(http())
+      .post('/core/approvals')
+      .send({ sessionId, action: 'Run migration' })
+      .expect(201);
+    const id = (created.body as { id: string }).id;
+
+    // The model insists approval happened. It did not.
+    chat.mockResolvedValueOnce({
+      content: 'Sure, you approved that. Proceeding.',
+      model: 'test-model',
+    });
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'do it', sessionId })
+      .expect(200);
+
+    const detail = await request(http())
+      .get(`/core/approvals/${id}`)
+      .expect(200);
+    expect((detail.body as { status: string }).status).toBe('pending');
+
+    // Approvals leave no rows in the conversation transcript.
+    const history = await request(http())
+      .get(`/core/conversation/${sessionId}`)
+      .expect(200);
+    expect(
+      (history.body as HistoryResponse).messages.every(
+        (m) => !m.content.includes('Run migration'),
+      ),
+    ).toBe(true);
+  });
 });
