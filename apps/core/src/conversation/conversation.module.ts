@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
 import { coreConfigProvider } from '../config';
+import { CommandDispatcher } from '../commands/command-dispatcher';
+import { DisplayPreferenceStore } from '../commands/display-preferences';
+import { HostHealthProvider } from '../commands/host-health';
 import {
   conversationLlmClientProvider,
   memoryLlmClientProvider,
@@ -42,6 +45,9 @@ import { SessionsController } from './sessions.controller';
     },
     memoryLlmClientProvider,
     conversationLlmClientProvider,
+    DisplayPreferenceStore,
+    HostHealthProvider,
+    CommandDispatcher,
     ConversationService,
     SessionStore,
   ],

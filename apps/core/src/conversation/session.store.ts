@@ -6,9 +6,16 @@ import type { ChatMessage } from '../llm/llm.client';
 import { SessionRepository } from '../session/session.repository';
 import type {
   MessageRecord,
+  Session,
   SessionSearchResult,
   SessionSummary,
 } from '../session/session.repository';
+
+/** Transcript message plus its reversible exclusion marker. */
+export interface HistoryMessage extends ChatMessage {
+  excludedFromContext: boolean;
+  createdAt: string;
+}
 
 /**
  * Core-facing session abstraction. Knows sessions, history windows,
@@ -53,11 +60,45 @@ export class SessionStore {
     });
   }
 
-  /** Complete transcript. `undefined` when the session does not exist. */
-  async getHistory(sessionId: string): Promise<ChatMessage[] | undefined> {
+  /**
+   * Complete transcript including reversibly excluded rows.
+   * `undefined` when the session does not exist.
+   */
+  async getHistory(sessionId: string): Promise<HistoryMessage[] | undefined> {
     const session = await this.repository.getSession(sessionId);
     if (!session) return undefined;
-    return this.repository.getMessages(sessionId);
+    const records = await this.repository.getMessageRecords(sessionId);
+    return records.map(
+      (record) =>
+        ({
+          role: record.role,
+          content: record.content,
+          excludedFromContext: record.excludedFromContext,
+          createdAt: record.createdAt,
+        }) as HistoryMessage,
+    );
+  }
+
+  async getSession(sessionId: string): Promise<Session | null> {
+    return this.repository.getSession(sessionId);
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    await this.repository.renameSession(sessionId, title);
+  }
+
+  async excludeLastTurn(sessionId: string): Promise<number[] | null> {
+    return this.repository.excludeLastTurn(sessionId);
+  }
+
+  async forkSession(sourceId: string): Promise<string> {
+    const id = randomUUID();
+    await this.repository.forkSession(sourceId, id);
+    return id;
+  }
+
+  async pingStores(): Promise<void> {
+    await this.repository.ping();
   }
 
   async listSessions(options?: {

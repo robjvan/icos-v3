@@ -239,4 +239,85 @@ describe('SqliteSessionRepository', () => {
     await repository.rebuildSearchIndex();
     expect(await repository.searchMessages('rebuildable')).toHaveLength(1);
   });
+
+  it('renames sessions without touching the transcript', async () => {
+    const repository = openRepo();
+    await repository.createSession('s1');
+    await repository.appendMessage('s1', { role: 'user', content: 'hello' });
+
+    await repository.renameSession('s1', '  my title  ');
+
+    expect(await repository.getSession('s1')).toMatchObject({
+      id: 's1',
+      title: 'my title',
+    });
+    expect(await repository.getMessages('s1')).toEqual([
+      { role: 'user', content: 'hello' },
+    ]);
+    const listed = await repository.listSessions();
+    expect(listed[0]).toMatchObject({ sessionId: 's1', title: 'my title' });
+  });
+
+  it('clears the title on blank rename', async () => {
+    const repository = openRepo();
+    await repository.createSession('s1');
+    await repository.renameSession('s1', 'title');
+    await repository.renameSession('s1', '   ');
+    expect((await repository.getSession('s1'))?.title).toBeUndefined();
+  });
+
+  it('excludes the last turn reversibly, keeping transcript evidence', async () => {
+    const repository = openRepo();
+    await repository.createSession('s1');
+    await repository.appendMessage('s1', { role: 'user', content: 'one' });
+    await repository.appendMessage('s1', { role: 'assistant', content: 'uno' });
+    await repository.appendMessage('s1', { role: 'user', content: 'two' });
+    await repository.appendMessage('s1', { role: 'assistant', content: 'dos' });
+
+    const excluded = await repository.excludeLastTurn('s1');
+
+    expect(excluded?.length).toBe(2);
+    expect(await repository.getMessages('s1')).toEqual([
+      { role: 'user', content: 'one' },
+      { role: 'assistant', content: 'uno' },
+    ]);
+    const records = await repository.getMessageRecords('s1');
+    expect(records).toHaveLength(4);
+    expect(records.filter((r) => r.excludedFromContext)).toHaveLength(2);
+    expect(await repository.excludeLastTurn('missing')).toBeNull();
+  });
+
+  it('returns null from excludeLastTurn when nothing is included', async () => {
+    const repository = openRepo();
+    await repository.createSession('s1');
+    expect(await repository.excludeLastTurn('s1')).toBeNull();
+  });
+
+  it('forks a session transcript into a new session', async () => {
+    const repository = openRepo();
+    await repository.createSession('s1');
+    await repository.appendMessage('s1', { role: 'user', content: 'one' });
+    await repository.appendMessage('s1', { role: 'assistant', content: 'uno' });
+    await repository.renameSession('s1', 'original');
+    await repository.excludeLastTurn('s1');
+
+    await repository.forkSession('s1', 's2');
+
+    expect(await repository.getMessages('s2')).toEqual([]);
+    expect(await repository.getMessageRecords('s2')).toHaveLength(2);
+    expect(await repository.getSession('s2')).toMatchObject({
+      id: 's2',
+      title: 'original',
+    });
+    // Source untouched.
+    expect(await repository.getMessageRecords('s1')).toHaveLength(2);
+    await expect(repository.forkSession('missing', 's3')).rejects.toThrow(
+      /unknown session/i,
+    );
+  });
+
+  it('pings liveness', async () => {
+    const repository = openRepo();
+    await expect(repository.ping()).resolves.toBeUndefined();
+  });
 });

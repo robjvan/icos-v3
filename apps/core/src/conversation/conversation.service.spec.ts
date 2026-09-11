@@ -15,6 +15,9 @@ import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import type { MemoryExtractionInput } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
 import type { MemoryCandidate } from '../memory/memory-candidate';
+import { CommandDispatcher } from '../commands/command-dispatcher';
+import { DisplayPreferenceStore } from '../commands/display-preferences';
+import { HostHealthProvider } from '../commands/host-health';
 import { ConversationService } from './conversation.service';
 import type { ConversationStreamEvent } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
@@ -93,9 +96,42 @@ function setup(
   const candidates = {
     saveCandidates,
     listCandidates: jest.fn(() => Promise.resolve([])),
+    ping: jest.fn(() => Promise.resolve()),
   } as unknown as MemoryCandidateRepository;
+  const prefs = new DisplayPreferenceStore();
+  const host = {
+    collect: jest.fn(() =>
+      Promise.resolve({
+        os: 'test-os',
+        arch: 'x86_64',
+        uptimeSeconds: 61,
+        cpuCores: 4,
+        cpuPercent: 12.5,
+        loadAverage: [0.5, 0.4, 0.3],
+        memoryUsedBytes: 1024 ** 3,
+        memoryTotalBytes: 4 * 1024 ** 3,
+        diskUsedBytes: 10 * 1024 ** 3,
+        diskTotalBytes: 100 * 1024 ** 3,
+        gpu: null,
+      }),
+    ),
+  } as unknown as HostHealthProvider;
+  const commands = new CommandDispatcher(
+    store,
+    candidates,
+    prefs,
+    host,
+    config,
+  );
   return {
-    service: new ConversationService(store, llm, extractor, candidates, config),
+    service: new ConversationService(
+      store,
+      llm,
+      extractor,
+      candidates,
+      commands,
+      config,
+    ),
     repository,
     chat,
     chatStream,
@@ -358,6 +394,95 @@ describe('ConversationService', () => {
       await flushMicrotasks();
 
       expect(extract).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('slash commands', () => {
+    it('answers commands without touching the LLM, transcript, or extraction', async () => {
+      const { service, repository, chat, extract, saveCandidates } = setup();
+
+      const result = await service.converse('/health');
+
+      expect(result.model).toBe('core');
+      expect(result.reply).toContain('Core: healthy');
+      expect(result.reply).toContain('Host System');
+      expect(result.reply).toContain('Status: healthy');
+      expect(result.command).toMatchObject({ kind: 'data' });
+      expect(chat).not.toHaveBeenCalled();
+      expect(extract).not.toHaveBeenCalled();
+      await flushMicrotasks();
+      expect(saveCandidates).not.toHaveBeenCalled();
+      // No session conjured into existence as a side effect.
+      expect(await repository.listSessions()).toHaveLength(0);
+    });
+
+    it('switches sessions on /new without deleting history', async () => {
+      const { service, repository, chat } = setup();
+      const first = await service.converse('hello');
+
+      const created = await service.converse('/new', first.sessionId);
+
+      expect(created.sessionId).not.toBe(first.sessionId);
+      expect(created.command).toMatchObject({ kind: 'session' });
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(await repository.getMessages(first.sessionId)).toHaveLength(2);
+    });
+
+    it('rejects unknown and malformed commands without LLM contact', async () => {
+      const { service, chat } = setup();
+
+      await expect(service.converse('/nope')).rejects.toThrow(
+        NotFoundException,
+      );
+      await expect(service.converse('/')).rejects.toThrow(BadRequestException);
+      expect(chat).not.toHaveBeenCalled();
+    });
+
+    it('streams commands as meta then done with no tokens', async () => {
+      const { service, chatStream } = setup();
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream('/health', undefined, (event) =>
+        events.push(event),
+      );
+
+      expect(chatStream).not.toHaveBeenCalled();
+      expect(events.some((e) => e.type === 'token')).toBe(false);
+      const done = events[events.length - 1];
+      expect(done.type).toBe('done');
+      if (done.type === 'done') {
+        expect(done.model).toBe('core');
+        expect(done.reply).toContain('Core: healthy');
+        expect(done.command).toMatchObject({ kind: 'data' });
+      }
+    });
+
+    it('streams /new with a meta session switch', async () => {
+      const { service } = setup();
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream('/new', undefined, (event) =>
+        events.push(event),
+      );
+
+      expect(events[0]).toMatchObject({ type: 'meta', model: 'core' });
+      const switched =
+        events[0].type === 'meta' ? events[0].sessionId : undefined;
+      expect(switched).toBeDefined();
+      expect(events[events.length - 1]).toMatchObject({ type: 'done' });
+    });
+
+    it('streams command errors as error events', async () => {
+      const { service, chatStream } = setup();
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream('/nope', undefined, (event) =>
+        events.push(event),
+      );
+
+      expect(chatStream).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'error' });
     });
   });
 });

@@ -4,6 +4,8 @@ export interface Session {
   id: string;
   createdAt: string;
   updatedAt: string;
+  /** Explicit title via `/rename`. Undefined when never set. */
+  title?: string;
 }
 
 export interface SessionSummary {
@@ -11,6 +13,8 @@ export interface SessionSummary {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  /** Explicit title when set, else first 80 chars of first user message. */
+  title?: string;
   /** First 80 chars of the first user message, if any. Computed, not stored. */
   preview?: string;
 }
@@ -21,6 +25,11 @@ export interface MessageRecord {
   role: string;
   content: string;
   createdAt: string;
+  /**
+   * Reversible `/undo` marker. Excluded rows stay in the transcript
+   * (evidence is never destroyed) but leave LLM context construction.
+   */
+  excludedFromContext: boolean;
 }
 
 export interface SessionSearchResult {
@@ -58,6 +67,35 @@ export abstract class SessionRepository {
     sessionId: string,
     options?: { limit?: number; beforeId?: number },
   ): Promise<ChatMessage[]>;
+
+  /**
+   * Full message records including the reversible exclusion marker.
+   * Transcript views use this; LLM context uses `getMessages`.
+   */
+  abstract getMessageRecords(
+    sessionId: string,
+    options?: { limit?: number; beforeId?: number },
+  ): Promise<MessageRecord[]>;
+
+  /**
+   * Reversibly exclude the most recent included turn (last user message
+   * plus following assistant messages) from LLM context. Returns the
+   * excluded message ids, or `null` when no included turn exists.
+   * Transcript rows are flagged, never deleted.
+   */
+  abstract excludeLastTurn(sessionId: string): Promise<number[] | null>;
+
+  /**
+   * Copy a session's transcript (roles, order, exclusion flags) into a
+   * new session row. Source untouched; message ids are fresh.
+   */
+  abstract forkSession(sourceId: string, newId: string): Promise<void>;
+
+  /** Set the explicit session title. Empty/blank clears it. */
+  abstract renameSession(id: string, title: string): Promise<void>;
+
+  /** Cheap liveness probe for health checks. */
+  abstract ping(): Promise<void>;
 
   abstract listSessions(options?: {
     limit?: number;

@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
+import { CommandDispatcher } from '../commands/command-dispatcher';
+import type { CommandResult } from '../commands/command-result';
 import { LlmClient, LlmError } from '../llm/llm.client';
 import type { ChatMessage } from '../llm/llm.client';
 import { EXTRACTION_VERSION } from '../memory/extraction.prompt';
@@ -18,12 +20,27 @@ import { InvalidSearchQueryError } from '../session/session.repository';
 import type { SessionSearchResult } from '../session/session.repository';
 import { buildContext } from './context.builder';
 import { SessionStore } from './session.store';
+import type { HistoryMessage } from './session.store';
 
 export type ConversationStreamEvent =
   | { type: 'meta'; sessionId: string; model: string }
   | { type: 'token'; content: string }
-  | { type: 'done'; reply: string; model: string }
+  | {
+      type: 'done';
+      reply: string;
+      model: string;
+      command?: CommandPayload;
+    }
   | { type: 'error'; message: string };
+
+/** Structured command outcome for chat surfaces and future clients. */
+export interface CommandPayload {
+  kind: CommandResult['kind'];
+  data?: Record<string, unknown>;
+}
+
+/** Model tag for deterministic command replies (never an LLM reply). */
+const COMMAND_MODEL = 'core';
 
 @Injectable()
 export class ConversationService {
@@ -34,13 +51,30 @@ export class ConversationService {
     private readonly llm: LlmClient,
     private readonly extractor: MemoryCandidateExtractor,
     private readonly candidates: MemoryCandidateRepository,
+    private readonly commands: CommandDispatcher,
     @Inject(CORE_CONFIG) private readonly config: CoreConfig,
   ) {}
 
   async converse(
     message: string,
     sessionId?: string,
-  ): Promise<{ sessionId: string; reply: string; model: string }> {
+  ): Promise<{
+    sessionId: string;
+    reply: string;
+    model: string;
+    command?: CommandPayload;
+  }> {
+    // Slash commands short-circuit before conversation: no LLM, no
+    // transcript writes, no memory extraction.
+    if (this.commands.isCommand(message)) {
+      const result = await this.commands.dispatch(message, sessionId);
+      return {
+        sessionId: result.sessionId ?? sessionId ?? '',
+        reply: result.text,
+        model: COMMAND_MODEL,
+        command: toPayload(result),
+      };
+    }
     const { id } = await this.sessions.resolve(sessionId);
     const history = await this.sessions.getContextMessages(id);
     const messages = this.prepareMessages(history, message);
@@ -82,7 +116,7 @@ export class ConversationService {
 
   async history(sessionId: string): Promise<{
     sessionId: string;
-    messages: ChatMessage[];
+    messages: HistoryMessage[];
   }> {
     const messages = await this.sessions.getHistory(sessionId);
     if (!messages) {
@@ -101,6 +135,29 @@ export class ConversationService {
     emit: (event: ConversationStreamEvent) => void,
     clientSignal?: AbortSignal,
   ): Promise<void> {
+    // Commands ride the stream as `meta` → `done` with no `token`
+    // events: no LLM contact, nothing persisted as conversation.
+    if (this.commands.isCommand(message)) {
+      try {
+        const result = await this.commands.dispatch(message, sessionId);
+        const activeId = result.sessionId ?? sessionId;
+        if (activeId) {
+          emit({ type: 'meta', sessionId: activeId, model: COMMAND_MODEL });
+        }
+        emit({
+          type: 'done',
+          reply: result.text,
+          model: COMMAND_MODEL,
+          command: toPayload(result),
+        });
+      } catch (err) {
+        emit({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+      return;
+    }
     const { id } = await this.sessions.resolve(sessionId);
     const history = await this.sessions.getContextMessages(id);
     const messages = this.prepareMessages(history, message);
@@ -108,31 +165,36 @@ export class ConversationService {
     // TODO(core.md): sentinel.evaluate (streaming) goes here.
     // TODO(core.md): tool dispatch goes here.
 
-    emit({ type: 'meta', sessionId: id, model: this.config.llmModel });
+    CommandDispatcher.trackStreamStart();
     try {
-      const { content, model } = await this.llm.chatStream(
-        { messages, sessionId: id },
-        { onToken: (token) => emit({ type: 'token', content: token }) },
-        clientSignal,
-      );
-      const userRecord = await this.sessions.append(id, {
-        role: 'user',
-        content: message,
-      });
-      await this.sessions.append(id, { role: 'assistant', content });
-      this.extractTurn({
-        sessionId: id,
-        userMessageId: userRecord.id,
-        userMessage: message,
-        assistantMessage: content,
-        context: history,
-      });
-      emit({ type: 'done', reply: content, model });
-    } catch (err) {
-      emit({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Unknown error',
-      });
+      emit({ type: 'meta', sessionId: id, model: this.config.llmModel });
+      try {
+        const { content, model } = await this.llm.chatStream(
+          { messages, sessionId: id },
+          { onToken: (token) => emit({ type: 'token', content: token }) },
+          clientSignal,
+        );
+        const userRecord = await this.sessions.append(id, {
+          role: 'user',
+          content: message,
+        });
+        await this.sessions.append(id, { role: 'assistant', content });
+        this.extractTurn({
+          sessionId: id,
+          userMessageId: userRecord.id,
+          userMessage: message,
+          assistantMessage: content,
+          context: history,
+        });
+        emit({ type: 'done', reply: content, model });
+      } catch (err) {
+        emit({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+    } finally {
+      CommandDispatcher.trackStreamEnd();
     }
   }
 
@@ -213,4 +275,11 @@ export class ConversationService {
       throw err;
     }
   }
+}
+
+function toPayload(result: CommandResult): CommandPayload {
+  return {
+    kind: result.kind,
+    ...(result.data ? { data: result.data } : {}),
+  };
 }

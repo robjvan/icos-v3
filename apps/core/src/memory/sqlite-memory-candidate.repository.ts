@@ -116,4 +116,8 @@ export class SqliteMemoryCandidateRepository extends MemoryCandidateRepository {
     const rows = this.database.prepare(sql).all(...params) as CandidateRow[];
     return rows.map(toCandidate);
   }
+
+  async ping(): Promise<void> {
+    this.database.prepare('SELECT 1').get();
+  }
 }

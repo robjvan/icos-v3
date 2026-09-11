@@ -14,4 +14,7 @@ export abstract class MemoryCandidateRepository {
     sessionId?: string,
     options?: { limit?: number },
   ): Promise<MemoryCandidate[]>;
+
+  /** Cheap liveness probe for health checks. */
+  abstract ping(): Promise<void>;
 }

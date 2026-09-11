@@ -400,4 +400,130 @@ describe('Conversation (e2e)', () => {
       .expect(200);
     expect((res.body as { candidates: unknown[] }).candidates).toHaveLength(0);
   });
+
+  it('slash commands answer without LLM, transcript, or extraction', async () => {
+    const res = await request(http())
+      .post('/core/conversation')
+      .send({ message: '/health' })
+      .expect(200);
+
+    const body = res.body as ConversationResponse & {
+      command?: { kind: string };
+    };
+    expect(body.model).toBe('core');
+    expect(body.reply).toContain('Core: healthy');
+    expect(body.reply).toContain('Host System');
+    expect(body.reply).toContain('Status: healthy');
+    expect(body.command).toMatchObject({ kind: 'data' });
+    expect(chat).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+
+    // Nothing persisted as conversation.
+    const listed = await request(http()).get('/core/sessions').expect(200);
+    expect((listed.body as { sessions: unknown[] }).sessions).toHaveLength(0);
+  });
+
+  it('rejects unknown slash commands with 404', async () => {
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/nope' })
+      .expect(404);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed slash commands with 400', async () => {
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/' })
+      .expect(400);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('streams slash commands as meta then done with no tokens', async () => {
+    const res = await request(http())
+      .post('/core/conversation/stream')
+      .send({ message: '/health' })
+      .expect(200)
+      .expect('Content-Type', /event-stream/);
+
+    expect(res.text).not.toContain('event: token');
+    expect(res.text).toContain('event: done');
+    expect(res.text).toContain('"model":"core"');
+    expect(chatStream).not.toHaveBeenCalled();
+  });
+
+  it('/rename titles the session and surfaces in the session list', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    const renamed = await request(http())
+      .post('/core/conversation')
+      .send({ message: '/rename e2e title', sessionId })
+      .expect(200);
+    expect((renamed.body as ConversationResponse).reply).toContain('e2e title');
+
+    const listed = await request(http()).get('/core/sessions').expect(200);
+    const sessions = (
+      listed.body as { sessions: { sessionId: string; title?: string }[] }
+    ).sessions;
+    expect(sessions.find((s) => s.sessionId === sessionId)?.title).toBe(
+      'e2e title',
+    );
+
+    // Transcript intact: still one ordinary turn.
+    const history = await request(http())
+      .get(`/core/conversation/${sessionId}`)
+      .expect(200);
+    expect(
+      (history.body as HistoryResponse).messages.map((m) => m.content),
+    ).toEqual(['hello', 'mock reply']);
+  });
+
+  it('/undo removes the last turn from LLM context only', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'first' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'second', sessionId })
+      .expect(200);
+
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/undo', sessionId })
+      .expect(200);
+
+    // History keeps all four rows, flagged.
+    const history = await request(http())
+      .get(`/core/conversation/${sessionId}`)
+      .expect(200);
+    const messages = (history.body as HistoryResponse).messages;
+    expect(messages).toHaveLength(4);
+    expect(
+      messages.filter(
+        (m) => (m as { excludedFromContext?: boolean }).excludedFromContext,
+      ),
+    ).toHaveLength(2);
+
+    // The next LLM turn sees only the first turn plus the new message.
+    chat.mockClear();
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'third', sessionId })
+      .expect(200);
+    const sent = chat.mock.calls[0][0] as {
+      messages: { content: string }[];
+    };
+    expect(sent.messages.map((m) => m.content)).toEqual([
+      'test-system',
+      'first',
+      'mock reply',
+      'third',
+    ]);
+  });
 });

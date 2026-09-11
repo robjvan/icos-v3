@@ -13,7 +13,8 @@ const SESSIONS_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    title TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    excluded_from_context INTEGER NOT NULL DEFAULT 0,
 
     FOREIGN KEY (session_id)
         REFERENCES sessions(id)
@@ -129,12 +131,44 @@ export function openDatabase(
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     db.exec(SCHEMAS[schema].sql);
+    migrateColumns(db, schema);
     verifySchema(db, schema);
     return db;
   } catch (err) {
     db.close();
     throw err;
   }
+}
+
+/**
+ * Idempotent additive migrations for databases created before a column
+ * existed. `CREATE TABLE IF NOT EXISTS` only covers fresh files; live
+ * files need explicit `ALTER TABLE`. Additive-only: never rename, drop,
+ * or reinterpret an existing column.
+ */
+function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
+  if (schema === 'sessions') {
+    addColumnIfMissing(db, 'sessions', 'title', 'TEXT');
+    addColumnIfMissing(
+      db,
+      'messages',
+      'excluded_from_context',
+      'INTEGER NOT NULL DEFAULT 0',
+    );
+  }
+}
+
+function addColumnIfMissing(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (rows.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 function verifySchema(db: Database.Database, schema: DatabaseSchema): void {

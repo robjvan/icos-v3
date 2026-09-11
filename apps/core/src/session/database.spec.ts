@@ -147,6 +147,74 @@ describe('openDatabase', () => {
       openDatabase(join(blocker, 'core.sqlite'), 'sessions'),
     ).toThrow();
   });
+
+  it('migrates pre-M6 files with title and exclusion columns', () => {
+    // Simulate a database created before M6: old DDL without the new
+    // columns, plus live rows that must survive the upgrade.
+    const path = join(dir, 'old.sqlite');
+    const old = new Database(path);
+    try {
+      old.exec(`
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id');
+        CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+        END;
+        CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+      old
+        .prepare(
+          'INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)',
+        )
+        .run('s1', 't', 't');
+      old
+        .prepare(
+          'INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)',
+        )
+        .run('s1', 'user', 'old row', 't');
+    } finally {
+      old.close();
+    }
+
+    const db = openDatabase(path, 'sessions');
+    const columns = (
+      db.prepare('PRAGMA table_info(messages)').all() as { name: string }[]
+    ).map((row) => row.name);
+    expect(columns).toContain('excluded_from_context');
+    const sessionColumns = (
+      db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]
+    ).map((row) => row.name);
+    expect(sessionColumns).toContain('title');
+    // Live rows survive with sane defaults.
+    expect(
+      db
+        .prepare('SELECT content, excluded_from_context AS e FROM messages')
+        .get(),
+    ).toEqual({ content: 'old row', e: 0 });
+    db.close();
+    // Re-open is idempotent.
+    openDatabase(path, 'sessions').close();
+  });
 });
 
 describe('migrateLegacyDatabase', () => {

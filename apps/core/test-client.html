@@ -94,6 +94,10 @@
         font-size: 12px;
       }
 
+      .excluded {
+        opacity: 0.45;
+      }
+
       .composer {
         border-top: 1px solid #333;
         padding: 12px;
@@ -352,7 +356,7 @@
           for (const s of data.sessions) {
             renderSessionItem(
               s.sessionId,
-              s.preview || `Session ${shortId(s.sessionId)}`,
+              s.title || s.preview || `Session ${shortId(s.sessionId)}`,
               `${s.messageCount} msgs · ${formatDate(s.updatedAt)}`,
             );
           }
@@ -415,7 +419,12 @@
           const data = await response.json();
 
           for (const m of data.messages) {
-            addMessage(m.role, m.content);
+            const bubble = addMessage(m.role, m.content);
+
+            if (m.excludedFromContext) {
+              bubble.classList.add('excluded');
+              bubble.title = 'Excluded from LLM context by /undo';
+            }
           }
         } catch (error) {
           addMessage('system', `Error: ${error.message}`);
@@ -558,6 +567,17 @@
         if (name === 'done' && !bubble.textContent) {
           bubble.classList.remove('typing');
           bubble.textContent = payload.reply;
+        }
+
+        // Structured command results render as system notices, not
+        // assistant messages. Session switches (/new, /fork) reset the pane.
+        if (name === 'done' && payload.command) {
+          bubble.className = 'message system';
+          bubble.textContent = payload.reply;
+
+          if (payload.command.kind === 'session') {
+            messages.replaceChildren(bubble);
+          }
         }
 
         if (name === 'error') {

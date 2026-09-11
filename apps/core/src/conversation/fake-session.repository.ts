@@ -19,7 +19,7 @@ import type {
 export class FakeSessionRepository extends SessionRepository {
   private readonly sessions = new Map<
     string,
-    { createdAt: string; updatedAt: string }
+    { createdAt: string; updatedAt: string; title?: string }
   >();
   private readonly records: MessageRecord[] = [];
   private nextId = 1;
@@ -46,6 +46,7 @@ export class FakeSessionRepository extends SessionRepository {
       role: message.role,
       content: message.content,
       createdAt: new Date().toISOString(),
+      excludedFromContext: false,
     };
     this.records.push(record);
     const session = this.sessions.get(sessionId);
@@ -61,6 +62,7 @@ export class FakeSessionRepository extends SessionRepository {
     let messages = this.records.filter(
       (record) =>
         record.sessionId === sessionId &&
+        !record.excludedFromContext &&
         (beforeId === undefined || record.id < beforeId),
     );
     if (options?.limit !== undefined) {
@@ -75,6 +77,64 @@ export class FakeSessionRepository extends SessionRepository {
     );
   }
 
+  async getMessageRecords(
+    sessionId: string,
+    options?: { limit?: number; beforeId?: number },
+  ): Promise<MessageRecord[]> {
+    const beforeId = options?.beforeId;
+    let messages = this.records.filter(
+      (record) =>
+        record.sessionId === sessionId &&
+        (beforeId === undefined || record.id < beforeId),
+    );
+    if (options?.limit !== undefined) {
+      messages = messages.slice(-options.limit);
+    }
+    return messages.map((record) => ({ ...record }));
+  }
+
+  async excludeLastTurn(sessionId: string): Promise<number[] | null> {
+    const own = this.records.filter(
+      (record) => record.sessionId === sessionId && !record.excludedFromContext,
+    );
+    const lastUserIdx = own.map((record) => record.role).lastIndexOf('user');
+    if (lastUserIdx === -1) return null;
+    const ids: number[] = [];
+    for (let i = lastUserIdx; i < own.length; i++) {
+      if (i !== lastUserIdx && own[i].role === 'user') break;
+      own[i].excludedFromContext = true;
+      ids.push(own[i].id);
+    }
+    return ids;
+  }
+
+  async forkSession(sourceId: string, newId: string): Promise<void> {
+    const source = this.sessions.get(sourceId);
+    if (!source) throw new Error(`Unknown session "${sourceId}"`);
+    const now = new Date().toISOString();
+    this.sessions.set(newId, {
+      createdAt: now,
+      updatedAt: now,
+      ...(source.title ? { title: source.title } : {}),
+    });
+    for (const record of this.records.filter((r) => r.sessionId === sourceId)) {
+      this.records.push({ ...record, id: this.nextId++, sessionId: newId });
+    }
+  }
+
+  async renameSession(id: string, title: string): Promise<void> {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const trimmed = title.trim();
+    if (trimmed) session.title = trimmed;
+    else delete session.title;
+    session.updatedAt = new Date().toISOString();
+  }
+
+  async ping(): Promise<void> {
+    // In-memory: always alive.
+  }
+
   async listSessions(options?: {
     limit?: number;
     offset?: number;
@@ -87,6 +147,7 @@ export class FakeSessionRepository extends SessionRepository {
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         messageCount: own.length,
+        title: session.title,
         preview: firstUser?.content.slice(0, 80),
       };
     });
