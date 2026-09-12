@@ -12,7 +12,7 @@
   - [x] Minimum slice chat client served same-origin at `/`
 
 - [x] M2: Streaming
-  - [x] LlmClient.chatStream parses upstream SSE with 502/504 mapping and abort support
+  - [x] `LlmClient.chatStream` parses upstream SSE with 502/504 mapping and abort support
   - [x] Test client renders tokens live; history stored on clean completion only
   - [x] `POST /core/conversation/stream` emits meta/token/done/error events
 
@@ -20,15 +20,21 @@
   - [x] Session persistence in sqlite store
   - [x] Session sidebar in chat ui
   - [x] SQLite transcript store (sessions/messages) with FTS5 index, triggers, rebuild
-  - [x] Async SessionStore over a repository boundary; MAX_HISTORY is context-only
+  - [x] Async `SessionStore` over a repository boundary; `MAX_HISTORY` is context-only
   - [x] `GET /core/sessions` and `GET /core/sessions/search` (phrase fallback for raw FTS errors)
 
 - [x] M4: Memory Candidate Extraction
   - [x] LLM extractor with deterministic validation and message-level provenance
-  - [x] memory_candidates ledger in SQLite
+  - [x] `memory_candidates` ledger in SQLite
   - [x] Fire-and-forget enrichment that never blocks or fails conversation
-  - [x] Separate MEMORY_LLM_* model role behind the generic LlmClient boundary
+  - [x] Separate `MEMORY_LLM_*` model role behind the generic `LlmClient` boundary
   - [x] `GET /core/memory-candidates` inspection endpoint
+
+- [x] M5: External Providers
+  - [x] Request contract carries conversation sessionId explicitly to `LlmClient`
+  - [x] Composable headers: `base + Bearer + static extras + UA + opencode-family` session affinity
+  - [x] Provider/model/headers/UA config with full `MEMORY_*` mirror, all env-driven
+  - [x] Provider-tagged errors, secrets-audited; zero provider branches in Core layers
 
 ## Designed
 
@@ -36,40 +42,31 @@
 
 ## Planned
 
-- [x] M3/M4 Cleanup: Split session and memory candidate DBs
-  - Session store: `~/.icos/data/sessions.db`
-  - Memory candidates: `~/.icos/data/memories.db`
-  - One-time row-level migration from legacy `core.sqlite`, provenance preserved
-- [ ] M5: External LLM Provider Compatibility (OpenRouter, Opencode Go/Zen)
-```
-Core
-  │
-  └── LlmClient
-      ├── Ollama
-      ├── llama.cpp
-      ├── OpenRouter
-      └── OpenCode/Zen/Go
-```
-- [ ] M6: Skill usage 
-  - Skill catalog: `~/.icos/skills/`
-- [ ] M7: Tools integration
-- [ ] M8: First complete agent loop
-- [ ] M9: Build the epistemic memory
-  - [ ] M9a: Epistemic Claim Model
-  - [ ] M9b: Evidence → Claim processing
-  - [ ] M9c: Contradiction / reinforcement
-  - [ ] M9d: RuVector substrate
-- [ ] M10: Memory retrieval / application
-  - [ ] M10a: Contextual recall
-  - [ ] M10b: Memory ranking
-  - [ ] M10c: Cross-memory comparison
-  - [ ] M10d: Memory-aware context construction
-- [ ] M11: Memory dynamics
-  - [ ] M11a: Consolidation
-  - [ ] M11b: Supersession
-  - [ ] M11c: Decay/forgetting
-  - [ ] M11d: Temporal reasoning
-  - [ ] M11e: Belief revision
+- [ ] M6: Interaction protocol
+  - [ ] M6a: slash commands
+    - notes: `.reference/notes/slash-commands.md`
+  - [ ] M6b: approvals
+  - [ ] M6c: clarifying and questions
+- [ ] M7: Skill usage
+  - intended skills catalog location: `~/.icos/skills/`
+- [ ] M8: Tools integration
+- [ ] M9: First complete agent loop
+- [ ] M10: Build the epistemic memory
+  - [ ] M10a: Epistemic Claim Model
+  - [ ] M10b: Evidence → Claim processing
+  - [ ] M10c: Contradiction / reinforcement
+  - [ ] M10d: RuVector substrate
+- [ ] M11: Memory retrieval / application
+  - [ ] M11a: Contextual recall
+  - [ ] M11b: Memory ranking
+  - [ ] M11c: Cross-memory comparison
+  - [ ] M11d: Memory-aware context construction
+- [ ] M12: Memory dynamics
+  - [ ] M12a: Consolidation
+  - [ ] M12b: Supersession
+  - [ ] M12c: Decay/forgetting
+  - [ ] M12d: Temporal reasoning
+  - [ ] M12e: Belief revision
 
 ## Deferred
 

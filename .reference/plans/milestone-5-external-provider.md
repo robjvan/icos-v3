@@ -1,4 +1,4 @@
-# M5 — External LLM Provider Compatibility
+# Milestone 5 — External LLM Provider Compatibility
 
 ## Status
 

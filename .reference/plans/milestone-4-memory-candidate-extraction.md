@@ -1,4 +1,4 @@
-# ICOS v3 — Milestone 4: Memory Candidate Extraction
+# Milestone 4: Memory Candidate Extraction
 
 ## Status
 
