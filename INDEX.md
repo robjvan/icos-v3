@@ -4,8 +4,10 @@
 icos/ # Root of project.
 ├── .icos/ # Working files for the instance.
 │
-├── .reference/ # References files - plans, legacy code, etc.
-│     └── plans/ # Planning files.
+├── .reference/ # Reference files - plans, legacy code, etc.
+│     └── notes/ # Subsystem planning notes.
+│     └── plans/ # Implementation plans.
+│           └── evidence/ # Evidence files captured after each milestone.
 │
 ├── apps/ # Software app projects.
 │     ├── core/ # Core subsytem.

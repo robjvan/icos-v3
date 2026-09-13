@@ -1,6 +1,6 @@
 # ICOS v3 Status Tracking
 
-> *Updated Sep 10, 2026*
+> *Updated Sep 13, 2026*
 
 ## Implemented
 
@@ -36,19 +36,27 @@
   - [x] Provider/model/headers/UA config with full `MEMORY_*` mirror, all env-driven
   - [x] Provider-tagged errors, secrets-audited; zero provider branches in Core layers
 
+- [x] M6: Interaction protocol
+  - [x] M6a: Deterministic slash commands (`/status /new /health /export /rename /thinking /timestamps /undo /fork /restart-runtime`)
+  - [x] Parser + registry/dispatch; commands bypass the LLM with structured `CommandResult`
+  - [x] Commands write no transcript rows and trigger no memory extraction
+  - [x] M6b: Structured approvals with explicit IDs and lifecycle (`pending → approved/rejected/expired/cancelled`)
+  - [x] UI approve/reject; LLM text can never approve; invalid transitions rejected
+  - [x] M6c: Clarifications/questions — free-form + structured choices, answer/cancel, resume semantics
+  - [x] Approval/clarification events isolated from the session transcript
+
+- [x] M7: Skills — discovery, retrieval, activation, context injection
+  - [x] M7a: Filesystem catalog (`SKILL.md`, fail-closed validation, `~/.icos/skills/`)
+  - [x] M7b: Deterministic discovery + `/skills suggest` (no embeddings)
+  - [x] M7c: Three scopes — session-pinned, one-shot, turn-contextual — delimited injection, observability
+  - [x] Evidence: `milestone-7a/7b/7c-evidence-skills.md`; live Isabel discovers `icos-v3-stack`
+
 ## Designed
 
 -
 
 ## Planned
 
-- [ ] M6: Interaction protocol
-  - [ ] M6a: slash commands
-    - notes: `.reference/notes/slash-commands.md`
-  - [ ] M6b: approvals
-  - [ ] M6c: clarifying and questions
-- [ ] M7: Skill usage
-  - intended skills catalog location: `~/.icos/skills/`
 - [ ] M8: Tools integration
 - [ ] M9: First complete agent loop
 - [ ] M10: Build the epistemic memory
@@ -88,6 +96,6 @@
 - [x] Streaming
 - [x] Extraction failure isolation
 - [x] Separate primary/extraction model roles
-- [ ] Tool execution under provider failure (M7)
+- [ ] Tool execution under provider failure (M8)
 - [ ] Full agent-loop test (M8)
 - [ ] Long-running session test (TBD)
