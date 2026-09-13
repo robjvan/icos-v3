@@ -23,6 +23,8 @@ import { SqliteMemoryCandidateRepository } from '../memory/sqlite-memory-candida
 import { SessionDatabaseService } from '../session/session-database.service';
 import { SessionRepository } from '../session/session.repository';
 import { SqliteSessionRepository } from '../session/sqlite-session.repository';
+import { SkillService } from '../skills/skill.service';
+import { SkillsController } from '../skills/skills.controller';
 import { CandidatesController } from './candidates.controller';
 import { ConversationController } from './conversation.controller';
 import { ConversationService } from './conversation.service';
@@ -36,6 +38,7 @@ import { SessionsController } from './sessions.controller';
     CandidatesController,
     ApprovalsController,
     ClarificationsController,
+    SkillsController,
   ],
   providers: [
     coreConfigProvider,
@@ -67,6 +70,7 @@ import { SessionsController } from './sessions.controller';
     conversationLlmClientProvider,
     DisplayPreferenceStore,
     HostHealthProvider,
+    SkillService,
     CommandDispatcher,
     ConversationService,
     SessionStore,

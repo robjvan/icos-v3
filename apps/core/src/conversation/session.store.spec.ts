@@ -22,6 +22,13 @@ function makeStore(maxHistory = 50): {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'm',
     memoryLlmTimeoutMs: 1000,
+    skillsDirPath: '/tmp/icos-test-skills-missing',
+    skillsEnabled: true,
+    skillsMaxBodyChars: 12000,
+    skillsMaxCatalogItems: 50,
+    skillsMaxActivePerSession: 5,
+    skillsMaxAutoLoadedPerTurn: 2,
+    skillsMaxContextChars: 8000,
   };
   const repository = new FakeSessionRepository();
   return { store: new SessionStore(repository, config), repository };

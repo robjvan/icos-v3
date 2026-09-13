@@ -18,6 +18,7 @@ import type { MemoryCandidate } from '../memory/memory-candidate';
 import { CommandDispatcher } from '../commands/command-dispatcher';
 import { DisplayPreferenceStore } from '../commands/display-preferences';
 import { HostHealthProvider } from '../commands/host-health';
+import { SkillService } from '../skills/skill.service';
 import { ConversationService } from './conversation.service';
 import type { ConversationStreamEvent } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
@@ -40,6 +41,13 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'test-model',
     memoryLlmTimeoutMs: 1000,
+    skillsDirPath: '/tmp/icos-test-skills-missing',
+    skillsEnabled: true,
+    skillsMaxBodyChars: 12000,
+    skillsMaxCatalogItems: 50,
+    skillsMaxActivePerSession: 5,
+    skillsMaxAutoLoadedPerTurn: 2,
+    skillsMaxContextChars: 8000,
     ...overrides,
   };
 }
@@ -121,6 +129,7 @@ function setup(
     candidates,
     prefs,
     host,
+    new SkillService(config),
     config,
   );
   return {

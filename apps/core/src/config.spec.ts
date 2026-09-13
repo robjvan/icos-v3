@@ -114,4 +114,40 @@ describe('loadConfig', () => {
     });
     expect(overridden.memoryProvider).toBe('ollama');
   });
+
+  it('defaults the skills catalog under the home directory', () => {
+    const config = loadConfig({ LLM_MODEL: 'm' });
+    expect(config.skillsDirPath).toBe(join(homedir(), '.icos/skills'));
+    expect(config.skillsEnabled).toBe(true);
+    expect(config.skillsMaxBodyChars).toBe(12000);
+    expect(config.skillsMaxCatalogItems).toBe(50);
+    expect(config.skillsMaxActivePerSession).toBe(5);
+    expect(config.skillsMaxAutoLoadedPerTurn).toBe(2);
+    expect(config.skillsMaxContextChars).toBe(8000);
+  });
+
+  it('parses skills overrides and rejects non-positive budgets', () => {
+    const config = loadConfig({
+      LLM_MODEL: 'm',
+      SKILLS_DIR_PATH: './custom/skills',
+      SKILLS_ENABLED: 'false',
+      SKILLS_MAX_BODY_CHARS: '100',
+      SKILLS_MAX_CATALOG_ITEMS: '3',
+      SKILLS_MAX_ACTIVE_PER_SESSION: '1',
+      SKILLS_MAX_AUTO_LOADED_PER_TURN: '1',
+      SKILLS_MAX_CONTEXT_CHARS: '500',
+    });
+    expect(config.skillsDirPath).toBe(
+      resolve(process.cwd(), './custom/skills'),
+    );
+    expect(config.skillsEnabled).toBe(false);
+    expect(config.skillsMaxBodyChars).toBe(100);
+    expect(config.skillsMaxCatalogItems).toBe(3);
+    expect(config.skillsMaxActivePerSession).toBe(1);
+    expect(config.skillsMaxAutoLoadedPerTurn).toBe(1);
+    expect(config.skillsMaxContextChars).toBe(500);
+    expect(() =>
+      loadConfig({ LLM_MODEL: 'm', SKILLS_MAX_BODY_CHARS: '0' }),
+    ).toThrow(/SKILLS_MAX_BODY_CHARS/);
+  });
 });

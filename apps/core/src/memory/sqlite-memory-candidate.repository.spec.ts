@@ -24,6 +24,13 @@ function testConfig(memoryDbPath: string, dir: string): CoreConfig {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'mem',
     memoryLlmTimeoutMs: 1000,
+    skillsDirPath: join(dir, 'skills-unused'),
+    skillsEnabled: true,
+    skillsMaxBodyChars: 12000,
+    skillsMaxCatalogItems: 50,
+    skillsMaxActivePerSession: 5,
+    skillsMaxAutoLoadedPerTurn: 2,
+    skillsMaxContextChars: 8000,
   };
 }
 

@@ -1,0 +1,174 @@
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { CoreConfig } from '../config';
+import { CommandDispatcher } from '../commands/command-dispatcher';
+import { DisplayPreferenceStore } from '../commands/display-preferences';
+import type { HostHealthProvider } from '../commands/host-health';
+import type { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { FakeSessionRepository } from '../conversation/fake-session.repository';
+import { SessionStore } from '../conversation/session.store';
+import { SKILL_FILE } from './skill-loader';
+import { SkillService } from './skill.service';
+
+function testConfig(
+  skillsDirPath: string,
+  overrides: Partial<CoreConfig> = {},
+): CoreConfig {
+  return {
+    port: 3000,
+    provider: 'ollama',
+    llmBaseUrl: 'http://localhost:11434/v1',
+    llmModel: 'test-model',
+    llmTimeoutMs: 1000,
+    systemPrompt: 'test-system',
+    maxHistory: 50,
+    sessionDbPath: ':memory:',
+    memoryDbPath: ':memory:',
+    legacyDbPath: '/tmp/icos-test-legacy-missing.sqlite',
+    memoryExtractionEnabled: false,
+    memoryProvider: 'ollama',
+    memoryLlmBaseUrl: 'http://localhost:11434/v1',
+    memoryLlmModel: 'test-model',
+    memoryLlmTimeoutMs: 1000,
+    skillsDirPath,
+    skillsEnabled: true,
+    skillsMaxBodyChars: 12000,
+    skillsMaxCatalogItems: 50,
+    skillsMaxActivePerSession: 5,
+    skillsMaxAutoLoadedPerTurn: 2,
+    skillsMaxContextChars: 8000,
+    ...overrides,
+  };
+}
+
+function writeSkill(
+  dir: string,
+  entry: string,
+  name: string,
+  description: string,
+  body = 'Body.',
+): void {
+  mkdirSync(join(dir, entry), { recursive: true });
+  writeFileSync(
+    join(dir, entry, SKILL_FILE),
+    `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`,
+  );
+}
+
+async function setup(
+  dir: string,
+  overrides: Partial<CoreConfig> = {},
+): Promise<{ dispatcher: CommandDispatcher; config: CoreConfig }> {
+  const config = testConfig(dir, overrides);
+  const store = new SessionStore(new FakeSessionRepository(), config);
+  const candidates = {
+    ping: jest.fn(() => Promise.resolve()),
+  } as unknown as MemoryCandidateRepository;
+  const prefs = new DisplayPreferenceStore();
+  const host = {
+    collect: jest.fn(() => Promise.resolve({})),
+  } as unknown as HostHealthProvider;
+  const skills = new SkillService(config);
+  await skills.onModuleInit();
+  const dispatcher = new CommandDispatcher(
+    store,
+    candidates,
+    prefs,
+    host,
+    skills,
+    config,
+  );
+  return { dispatcher, config };
+}
+
+describe('/skills commands', () => {
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'icos-skills-cmd-'));
+    writeSkill(dir, 'daily-journal', 'daily-journal', 'Journal.', 'Ask away.');
+    writeSkill(dir, 'capture-idea', 'capture-idea', 'Capture.');
+    writeSkill(dir, 'bad-dir', 'other', 'Mismatch.');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('is registered in the command catalog', async () => {
+    const { dispatcher } = await setup(dir);
+    expect(dispatcher.commandNames).toContain('skills');
+  });
+
+  it('/skills lists the catalog plus skip reasons', async () => {
+    const { dispatcher } = await setup(dir);
+    const result = await dispatcher.dispatch('/skills');
+    expect(result.kind).toBe('data');
+    expect(result.text).toContain('Skills (2):');
+    expect(result.text).toContain('capture-idea');
+    expect(result.text).toContain('daily-journal');
+    expect(result.text).toContain('Skipped (1):');
+    expect(result.text).toContain('bad-dir (name-mismatch)');
+  });
+
+  it('/skills reports an empty catalog honestly', async () => {
+    const { dispatcher } = await setup(join(dir, 'does-not-exist'));
+    const result = await dispatcher.dispatch('/skills');
+    expect(result.kind).toBe('data');
+    expect(result.text).toContain('Skills: none');
+  });
+
+  it('/skills show renders one skill body', async () => {
+    const { dispatcher } = await setup(dir);
+    const result = await dispatcher.dispatch('/skills show DAILY-JOURNAL');
+    expect(result.kind).toBe('data');
+    expect(result.text).toContain('# daily-journal');
+    expect(result.text).toContain('Ask away.');
+    expect(result.data).toMatchObject({ name: 'daily-journal' });
+  });
+
+  it('/skills show rejects missing names deterministically', async () => {
+    const { dispatcher } = await setup(dir);
+    await expect(dispatcher.dispatch('/skills show')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      dispatcher.dispatch('/skills show nope'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('/skills rejects unknown subcommands', async () => {
+    const { dispatcher } = await setup(dir);
+    await expect(
+      dispatcher.dispatch('/skills frobnicate'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('/skills refresh re-scans and reports counts', async () => {
+    const { dispatcher } = await setup(dir);
+    const result = await dispatcher.dispatch('/skills refresh');
+    expect(result.kind).toBe('data');
+    expect(result.text).toContain('scanned 3, loaded 2, skipped 1');
+  });
+
+  it('M7b/M7c subcommands report as not yet available', async () => {
+    const { dispatcher } = await setup(dir);
+    for (const sub of ['use x', 'drop x', 'active', 'suggest x', 'pull x']) {
+      const result = await dispatcher.dispatch(`/skills ${sub}`);
+      expect(result.kind).toBe('message');
+      expect(result.text).toMatch(/not yet available/);
+    }
+  });
+
+  it('/skills reports disabled mode without touching the catalog', async () => {
+    const { dispatcher } = await setup(dir, { skillsEnabled: false });
+    const result = await dispatcher.dispatch('/skills');
+    expect(result.kind).toBe('message');
+    expect(result.text).toContain('Skills are disabled');
+    const show = await dispatcher.dispatch('/skills show daily-journal');
+    expect(show.kind).toBe('message');
+    expect(show.text).toContain('Skills are disabled');
+  });
+});

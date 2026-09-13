@@ -18,6 +18,8 @@ import { DisplayPreferenceStore } from './display-preferences';
 import { HostHealthProvider } from './host-health';
 import { registerRuntimeCommands } from './runtime-commands';
 import { registerSessionCommands } from './session-commands';
+import { registerSkillCommands } from '../skills/command-adapter';
+import { SkillService } from '../skills/skill.service';
 import {
   MalformedSlashCommandError,
   isSlashCommandInput,
@@ -39,6 +41,7 @@ export class CommandDispatcher {
     private readonly candidates: MemoryCandidateRepository,
     private readonly prefs: DisplayPreferenceStore,
     private readonly host: HostHealthProvider,
+    private readonly skills: SkillService,
     @Inject(CORE_CONFIG) private readonly config: CoreConfig,
   ) {
     const register = (handler: SlashCommandHandler): void => {
@@ -57,6 +60,7 @@ export class CommandDispatcher {
       prefs,
       host,
     });
+    registerSkillCommands(register, { skills, config });
   }
 
   /** In-flight SSE streams; maintained by `ConversationService`. */

@@ -30,6 +30,20 @@ export interface CoreConfig {
   memoryLlmHeaders?: Record<string, string>;
   memoryUserAgent?: string;
   memoryLlmTimeoutMs: number;
+  /** Filesystem skill catalog root (M7). One `<name>/SKILL.md` per skill. */
+  skillsDirPath: string;
+  /** Kill-switch: false restores pre-M7 behavior exactly. */
+  skillsEnabled: boolean;
+  /** Per-skill body cap, applied after trimming. */
+  skillsMaxBodyChars: number;
+  /** Cap on catalog summaries injected into model context. */
+  skillsMaxCatalogItems: number;
+  /** Cap on explicitly session-pinned skills. */
+  skillsMaxActivePerSession: number;
+  /** Cap on automatically loaded skills per turn (provisional). */
+  skillsMaxAutoLoadedPerTurn: number;
+  /** Cap on total skill-body chars injected per turn (provisional). */
+  skillsMaxContextChars: number;
 }
 
 function parsePositiveInt(
@@ -95,6 +109,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
       env.MEMORY_LLM_TIMEOUT_MS,
       60000,
       'MEMORY_LLM_TIMEOUT_MS',
+    ),
+    skillsDirPath: resolvePath(env.SKILLS_DIR_PATH, '~/.icos/skills'),
+    skillsEnabled: parseBoolean(env.SKILLS_ENABLED, true),
+    skillsMaxBodyChars: parsePositiveInt(
+      env.SKILLS_MAX_BODY_CHARS,
+      12000,
+      'SKILLS_MAX_BODY_CHARS',
+    ),
+    skillsMaxCatalogItems: parsePositiveInt(
+      env.SKILLS_MAX_CATALOG_ITEMS,
+      50,
+      'SKILLS_MAX_CATALOG_ITEMS',
+    ),
+    skillsMaxActivePerSession: parsePositiveInt(
+      env.SKILLS_MAX_ACTIVE_PER_SESSION,
+      5,
+      'SKILLS_MAX_ACTIVE_PER_SESSION',
+    ),
+    skillsMaxAutoLoadedPerTurn: parsePositiveInt(
+      env.SKILLS_MAX_AUTO_LOADED_PER_TURN,
+      2,
+      'SKILLS_MAX_AUTO_LOADED_PER_TURN',
+    ),
+    skillsMaxContextChars: parsePositiveInt(
+      env.SKILLS_MAX_CONTEXT_CHARS,
+      8000,
+      'SKILLS_MAX_CONTEXT_CHARS',
     ),
   };
 }

@@ -7,6 +7,7 @@ import { CommandDispatcher } from './command-dispatcher';
 import { DisplayPreferenceStore } from './display-preferences';
 import { HostHealthProvider } from './host-health';
 import type { HostHealth } from './host-health';
+import { SkillService } from '../skills/skill.service';
 
 function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
   return {
@@ -26,6 +27,13 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'test-model',
     memoryLlmTimeoutMs: 1000,
+    skillsDirPath: '/tmp/icos-test-skills-missing',
+    skillsEnabled: true,
+    skillsMaxBodyChars: 12000,
+    skillsMaxCatalogItems: 50,
+    skillsMaxActivePerSession: 5,
+    skillsMaxAutoLoadedPerTurn: 2,
+    skillsMaxContextChars: 8000,
     ...overrides,
   };
 }
@@ -64,6 +72,7 @@ function setup(config: CoreConfig = testConfig()) {
     candidates,
     prefs,
     host,
+    new SkillService(config),
     config,
   );
   return { repository, store, candidates, prefs, host, dispatcher, config };
@@ -89,6 +98,7 @@ describe('builtin slash commands', () => {
       'new',
       'rename',
       'restart-runtime',
+      'skills',
       'status',
       'thinking',
       'timestamps',
@@ -178,6 +188,7 @@ describe('builtin slash commands', () => {
       candidates,
       prefs,
       bare,
+      new SkillService(config),
       config,
     );
     const result = await dispatcher.dispatch('/health');
@@ -197,6 +208,7 @@ describe('builtin slash commands', () => {
       failing,
       prefs,
       host,
+      new SkillService(config),
       config,
     );
     const result = await dispatcher.dispatch('/health');

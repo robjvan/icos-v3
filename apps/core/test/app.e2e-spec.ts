@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
@@ -97,6 +97,13 @@ describe('Conversation (e2e)', () => {
         memoryLlmBaseUrl: 'http://localhost:11434/v1',
         memoryLlmModel: 'test-model',
         memoryLlmTimeoutMs: 1000,
+        skillsDirPath: join(dir, 'skills'),
+        skillsEnabled: true,
+        skillsMaxBodyChars: 12000,
+        skillsMaxCatalogItems: 50,
+        skillsMaxActivePerSession: 5,
+        skillsMaxAutoLoadedPerTurn: 2,
+        skillsMaxContextChars: 8000,
       })
       .overrideProvider(LlmClient)
       .useValue({ chat, chatStream })
@@ -450,6 +457,70 @@ describe('Conversation (e2e)', () => {
     expect(res.text).toContain('event: done');
     expect(res.text).toContain('"model":"core"');
     expect(chatStream).not.toHaveBeenCalled();
+  });
+
+  it('GET /core/skills reports the empty enabled catalog', async () => {
+    const res = await request(http()).get('/core/skills').expect(200);
+    expect(res.body).toEqual({ enabled: true, skills: [], skipped: [] });
+  });
+
+  it('/skills answers without LLM, transcript, or extraction', async () => {
+    const res = await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills' })
+      .expect(200);
+
+    const body = res.body as ConversationResponse & {
+      command?: { kind: string };
+    };
+    expect(body.model).toBe('core');
+    expect(body.reply).toContain('Skills: none');
+    expect(body.command).toMatchObject({ kind: 'data' });
+    expect(chat).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+
+    const listed = await request(http()).get('/core/sessions').expect(200);
+    expect((listed.body as { sessions: unknown[] }).sessions).toHaveLength(0);
+  });
+
+  it('skills refresh/show round-trips a filesystem fixture', async () => {
+    const skillsDir = join(dir, 'skills');
+    mkdirSync(join(skillsDir, 'demo'), { recursive: true });
+    writeFileSync(
+      join(skillsDir, 'demo', 'SKILL.md'),
+      '---\nname: demo\ndescription: Demo skill.\n---\n\nDo demo things.\n',
+    );
+
+    const refreshed = await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills refresh' })
+      .expect(200);
+    expect((refreshed.body as ConversationResponse).reply).toContain(
+      'scanned 1, loaded 1, skipped 0',
+    );
+
+    const shown = await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills show demo' })
+      .expect(200);
+    expect((shown.body as ConversationResponse).reply).toContain(
+      'Do demo things.',
+    );
+
+    const listed = await request(http()).get('/core/skills').expect(200);
+    expect(listed.body).toMatchObject({
+      enabled: true,
+      skills: [{ name: 'demo', description: 'Demo skill.', version: '0.0.0' }],
+    });
+
+    const detail = await request(http()).get('/core/skills/demo').expect(200);
+    expect(detail.body).toMatchObject({
+      name: 'demo',
+      body: 'Do demo things.',
+    });
+
+    await request(http()).get('/core/skills/nope').expect(404);
+    expect(chat).not.toHaveBeenCalled();
   });
 
   it('/rename titles the session and surfaces in the session list', async () => {
