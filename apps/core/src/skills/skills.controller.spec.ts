@@ -94,4 +94,22 @@ describe('SkillsController', () => {
       BadRequestException,
     );
   });
+
+  it('discovers ranked matches without loading bodies', async () => {
+    const ctl = await controller();
+    expect(ctl.discover('journal')).toEqual({
+      query: 'journal',
+      matches: [{ name: 'daily-journal', score: 2, matchedOn: ['name'] }],
+    });
+    expect(ctl.discover('sourdough')).toEqual({
+      query: 'sourdough',
+      matches: [],
+    });
+  });
+
+  it('rejects blank discovery queries', async () => {
+    const ctl = await controller();
+    expect(() => ctl.discover('   ')).toThrow(BadRequestException);
+    expect(() => ctl.discover()).toThrow(BadRequestException);
+  });
 });

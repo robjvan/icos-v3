@@ -523,6 +523,46 @@ describe('Conversation (e2e)', () => {
     expect(chat).not.toHaveBeenCalled();
   });
 
+  it('suggest and discover rank without activating or injecting', async () => {
+    const skillsDir = join(dir, 'skills');
+    mkdirSync(join(skillsDir, 'demo'), { recursive: true });
+    writeFileSync(
+      join(skillsDir, 'demo', 'SKILL.md'),
+      '---\nname: demo\ndescription: Demo skill for journal work.\n---\n\nDo demo things.\n',
+    );
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills refresh' })
+      .expect(200);
+
+    const suggested = await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills suggest journal' })
+      .expect(200);
+    expect((suggested.body as ConversationResponse).reply).toContain('demo');
+    expect((suggested.body as ConversationResponse).model).toBe('core');
+
+    const discovered = await request(http())
+      .get('/core/skills/discover')
+      .query({ q: 'journal' })
+      .expect(200);
+    expect(discovered.body).toMatchObject({
+      query: 'journal',
+      matches: [{ name: 'demo' }],
+    });
+
+    await request(http()).get('/core/skills/discover').expect(400);
+
+    // Suggesting changed nothing: catalog identical, transcript empty.
+    const listed = await request(http()).get('/core/skills').expect(200);
+    expect(listed.body).toMatchObject({
+      skills: [{ name: 'demo' }],
+    });
+    const sessions = await request(http()).get('/core/sessions').expect(200);
+    expect((sessions.body as { sessions: unknown[] }).sessions).toHaveLength(0);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
   it('/rename titles the session and surfaces in the session list', async () => {
     const first = await request(http())
       .post('/core/conversation')

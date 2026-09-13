@@ -10,10 +10,12 @@ import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
 import { loadSkillBody, scanSkillDir } from './skill-loader';
 import type { ParsedSkillFile } from './skill-loader';
+import { discoverSkills } from './skill-discovery';
 import type {
   LoadedSkill,
   SkillDescriptor,
   SkillLoadReport,
+  SkillMatch,
 } from './skill.types';
 
 /**
@@ -93,6 +95,13 @@ export class SkillService implements OnModuleInit {
     return [...this.descriptors.values()].sort((a, b) =>
       a.name.localeCompare(b.name),
     );
+  }
+
+  /** Deterministic discovery over descriptors (M7b). Pure ranking —
+   * no state mutation, no body reads, no LLM. Empty when disabled. */
+  discover(input: string, limit?: number): SkillMatch[] {
+    if (!this.enabled) return [];
+    return discoverSkills(this.listDescriptors(), input, limit);
   }
 
   /** Explicit body load from the canonical location, cached per scan

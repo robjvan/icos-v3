@@ -61,13 +61,11 @@ class SkillsCommand implements SlashCommandHandler {
           data: { pending: 'm7c' },
         };
       case 'suggest':
-        return {
-          kind: 'message',
-          text: '`/skills suggest` lands in M7b — deterministic discovery is not yet available.',
-          data: { pending: 'm7b' },
-        };
+        return this.suggest(rest);
       default:
-        throw new BadRequestException('Usage: /skills [show <name> | refresh]');
+        throw new BadRequestException(
+          'Usage: /skills [show <name> | refresh | suggest <text>]',
+        );
     }
   }
 
@@ -115,6 +113,38 @@ class SkillsCommand implements SlashCommandHandler {
         description: skill.description,
         version: skill.version,
         body: skill.body,
+      },
+    };
+  }
+
+  private suggest(args: string[]): CommandResult {
+    const query = args.join(' ');
+    if (!query.trim()) {
+      throw new BadRequestException('Usage: /skills suggest <text>');
+    }
+    // Same engine as automatic discovery, human-visible: ranked names
+    // only — never activates, never injects bodies.
+    const matches = this.deps.skills.discover(query);
+    const lines =
+      matches.length === 0
+        ? [`No skills match "${query}".`]
+        : [
+            `Skills matching "${query}":`,
+            ...matches.map(
+              (m) =>
+                `- ${m.skill.name} (score ${m.score}, ${m.matchedOn.join('+')}) — ${m.skill.description}`,
+            ),
+          ];
+    return {
+      kind: 'data',
+      text: lines.join('\n'),
+      data: {
+        query,
+        matches: matches.map((m) => ({
+          name: m.skill.name,
+          score: m.score,
+          matchedOn: m.matchedOn,
+        })),
       },
     };
   }

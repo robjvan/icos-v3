@@ -1,4 +1,10 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Param,
+  Query,
+} from '@nestjs/common';
 import { SkillService } from './skill.service';
 
 /**
@@ -19,6 +25,24 @@ export class SkillsController {
       enabled: this.skills.enabled,
       skills: this.skills.listDescriptors(),
       skipped: this.skills.getReport().skipped,
+    };
+  }
+
+  @Get('discover')
+  discover(@Query('q') query?: string): {
+    query: string;
+    matches: { name: string; score: number; matchedOn: string[] }[];
+  } {
+    if (!query?.trim()) {
+      throw new BadRequestException('Usage: /core/skills/discover?q=<text>');
+    }
+    return {
+      query,
+      matches: this.skills.discover(query).map((m) => ({
+        name: m.skill.name,
+        score: m.score,
+        matchedOn: m.matchedOn,
+      })),
     };
   }
 

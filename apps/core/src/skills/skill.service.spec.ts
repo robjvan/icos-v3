@@ -143,4 +143,29 @@ describe('SkillService', () => {
       BadRequestException,
     );
   });
+
+  it('discovers ranked candidates without reading bodies', async () => {
+    writeSkill(dir, 'daily-journal', 'daily-journal', 'Journal about the day.');
+    writeSkill(dir, 'capture-idea', 'capture-idea', 'Capture.');
+    writeSkill(dir, 'bad-dir', 'other', 'Mismatch.');
+    const service = new SkillService(testConfig(dir));
+    await service.refresh();
+    const matches = service.discover('daily journal');
+    expect(matches.map((m) => m.skill.name)).toEqual(['daily-journal']);
+    expect(matches[0]?.matchedOn).toContain('name');
+    // Skipped skills are excluded from discovery.
+    expect(service.discover('mismatch')).toEqual([]);
+    // Discovery is pure: registry and report unchanged.
+    expect(service.listDescriptors()).toHaveLength(2);
+    expect(service.getReport().skipped).toEqual([
+      { name: 'bad-dir', reason: 'name-mismatch' },
+    ]);
+  });
+
+  it('discovery returns empty when disabled', async () => {
+    writeSkill(dir, 'daily-journal', 'daily-journal', 'Journal.');
+    const service = new SkillService(testConfig(dir, { skillsEnabled: false }));
+    await service.refresh();
+    expect(service.discover('journal')).toEqual([]);
+  });
 });

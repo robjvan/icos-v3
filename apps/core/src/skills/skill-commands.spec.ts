@@ -153,13 +153,39 @@ describe('/skills commands', () => {
     expect(result.text).toContain('scanned 3, loaded 2, skipped 1');
   });
 
-  it('M7b/M7c subcommands report as not yet available', async () => {
+  it('M7c subcommands report as not yet available', async () => {
     const { dispatcher } = await setup(dir);
-    for (const sub of ['use x', 'drop x', 'active', 'suggest x', 'pull x']) {
+    for (const sub of ['use x', 'drop x', 'active', 'pull x']) {
       const result = await dispatcher.dispatch(`/skills ${sub}`);
       expect(result.kind).toBe('message');
       expect(result.text).toMatch(/not yet available/);
     }
+  });
+
+  it('/skills suggest ranks candidates without activating anything', async () => {
+    const { dispatcher } = await setup(dir);
+    const before = await dispatcher.dispatch('/skills');
+    const result = await dispatcher.dispatch('/skills suggest journal');
+    expect(result.kind).toBe('data');
+    expect(result.text).toContain('daily-journal');
+    expect(result.text).not.toContain('capture-idea');
+    expect(result.data).toMatchObject({
+      query: 'journal',
+      matches: [{ name: 'daily-journal' }],
+    });
+    // Nothing activated, nothing injected: catalog state identical.
+    const after = await dispatcher.dispatch('/skills');
+    expect(after.text).toBe(before.text);
+  });
+
+  it('/skills suggest handles empty results and blank input', async () => {
+    const { dispatcher } = await setup(dir);
+    const empty = await dispatcher.dispatch('/skills suggest sourdough');
+    expect(empty.kind).toBe('data');
+    expect(empty.text).toContain('No skills match');
+    await expect(dispatcher.dispatch('/skills suggest')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('/skills reports disabled mode without touching the catalog', async () => {
