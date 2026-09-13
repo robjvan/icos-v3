@@ -33,17 +33,6 @@ It is an experimental platform, not a product. It exists to serve one user's act
 
 **Status:** M1–M6 complete — a working conversation loop with token streaming, persistent SQLite sessions with FTS5 recall, memory-candidate extraction with an evidence ledger, a provider-agnostic LLM boundary, and a deterministic interaction layer (slash commands, structured human approvals, structured clarifications). Next: M7 (skill usage).
 
-## License
-
-Free for noncommercial use under the [PolyForm Noncommercial License 1.0.0](./LICENSE). Commercial use requires a separate license — see [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md).
-
-## Features and Capabilities
-
-## Subsystem Documents
-
-- `docs/readme-core.md` - outlines the ICOS core agent runtime
-- `docs/readme-memory.md` - outlines the ICOS memory subsystems
-- `docs/readme-sentinel.md` - outlines the ICOS model sentinel subsystem
 
 ## Milestones
 
@@ -59,3 +48,19 @@ Free for noncommercial use under the [PolyForm Noncommercial License 1.0.0](./LI
 - **M10 →** *Can it form knowledge?*
 - **M11 →** *Can it retrieve/use that knowledge?*
 - **M12 →** *Can that knowledge evolve?*
+
+## Usage
+
+1. Ensure you have `npm` and `node` installed.
+2. Clone the repo and launch the core by running these commands:
+
+```sh
+git clone https://git.exilelogic.ca/robjvan/icos-v3.git
+cd icos-v3/apps/core && npm run start
+```
+
+3. Open a web browser and head to `localhost:3000` for local testing chat UI.
+
+## License
+
+Free for noncommercial use under the [PolyForm Noncommercial License 1.0.0](./LICENSE). Commercial use requires a separate license — see [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md).
