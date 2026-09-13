@@ -46,6 +46,29 @@ export class SkillsController {
     };
   }
 
+  @Get('active')
+  active(@Query('sessionId') sessionId?: string): {
+    sessionId: string;
+    explicit: string[];
+    requested: string[];
+    contextual: string[];
+    lastTurn: unknown;
+  } {
+    if (!sessionId?.trim()) {
+      throw new BadRequestException(
+        'Usage: /core/skills/active?sessionId=<id>',
+      );
+    }
+    const last = this.skills.getLastTurn(sessionId);
+    return {
+      sessionId,
+      explicit: this.skills.getExplicitNames(sessionId),
+      requested: this.skills.getPendingNames(sessionId),
+      contextual: last?.contextual ?? [],
+      lastTurn: last,
+    };
+  }
+
   @Get(':name')
   async get(@Param('name') name: string): Promise<{
     name: string;

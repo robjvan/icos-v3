@@ -95,6 +95,26 @@ describe('SkillsController', () => {
     );
   });
 
+  it('reports explicit, requested, and last-turn scopes', async () => {
+    const service = new SkillService(testConfig(dir, {}));
+    await service.onModuleInit();
+    const ctl = new SkillsController(service);
+    expect(() => ctl.active()).toThrow(BadRequestException);
+    expect(ctl.active('s1')).toEqual({
+      sessionId: 's1',
+      explicit: [],
+      requested: [],
+      contextual: [],
+      lastTurn: null,
+    });
+    service.useSkill('s1', 'daily-journal');
+    await service.stageOneShot('s1', 'daily-journal');
+    expect(ctl.active('s1')).toMatchObject({
+      explicit: ['daily-journal'],
+      requested: ['daily-journal'],
+    });
+  });
+
   it('discovers ranked matches without loading bodies', async () => {
     const ctl = await controller();
     expect(ctl.discover('journal')).toEqual({

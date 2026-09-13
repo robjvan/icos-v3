@@ -51,6 +51,7 @@ export class CommandDispatcher {
       sessions,
       config,
       prefs,
+      skills,
       activeStreams: () => CommandDispatcher.activeStreams,
     });
     registerRuntimeCommands(register, {

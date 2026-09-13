@@ -16,6 +16,9 @@ import type { ChatMessage } from '../llm/llm.client';
 import { EXTRACTION_VERSION } from '../memory/extraction.prompt';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { SkillService } from '../skills/skill.service';
+import type { ResolvedTurnSkills } from '../skills/skill.service';
+import type { LoadedSkill, TurnSkillReport } from '../skills/skill.types';
 import { InvalidSearchQueryError } from '../session/session.repository';
 import type { SessionSearchResult } from '../session/session.repository';
 import { buildContext } from './context.builder';
@@ -52,6 +55,7 @@ export class ConversationService {
     private readonly extractor: MemoryCandidateExtractor,
     private readonly candidates: MemoryCandidateRepository,
     private readonly commands: CommandDispatcher,
+    private readonly skills: SkillService,
     @Inject(CORE_CONFIG) private readonly config: CoreConfig,
   ) {}
 
@@ -77,7 +81,8 @@ export class ConversationService {
     }
     const { id } = await this.sessions.resolve(sessionId);
     const history = await this.sessions.getContextMessages(id);
-    const messages = this.prepareMessages(history, message);
+    const turnSkills = await this.skills.resolveTurnSkills(id, message);
+    const messages = this.prepareMessages(history, message, turnSkills);
 
     // TODO(core.md): sentinel.evaluate goes here — assess the model
     // response (VALID / REVISE / RETRY / ...) before trusting it.
@@ -95,6 +100,7 @@ export class ConversationService {
         content: message,
       });
       await this.sessions.append(id, { role: 'assistant', content });
+      this.recordSkillTurn(id, turnSkills);
       this.extractTurn({
         sessionId: id,
         userMessageId: userRecord.id,
@@ -160,7 +166,8 @@ export class ConversationService {
     }
     const { id } = await this.sessions.resolve(sessionId);
     const history = await this.sessions.getContextMessages(id);
-    const messages = this.prepareMessages(history, message);
+    const turnSkills = await this.skills.resolveTurnSkills(id, message);
+    const messages = this.prepareMessages(history, message, turnSkills);
 
     // TODO(core.md): sentinel.evaluate (streaming) goes here.
     // TODO(core.md): tool dispatch goes here.
@@ -179,6 +186,7 @@ export class ConversationService {
           content: message,
         });
         await this.sessions.append(id, { role: 'assistant', content });
+        this.recordSkillTurn(id, turnSkills);
         this.extractTurn({
           sessionId: id,
           userMessageId: userRecord.id,
@@ -201,6 +209,7 @@ export class ConversationService {
   private prepareMessages(
     history: ChatMessage[],
     message: string,
+    turnSkills?: ResolvedTurnSkills,
   ): ChatMessage[] {
     // TODO(core.md): memory.recall goes here — retrieve relevant memories
     // for { input, session, profile } before building context.
@@ -209,7 +218,42 @@ export class ConversationService {
       history,
       message,
       this.config.maxHistory,
+      turnSkills
+        ? {
+            catalog: this.skills.buildCatalogBlock(),
+            explicit: turnSkills.explicit,
+            requested: turnSkills.requested,
+            contextual: turnSkills.contextual,
+          }
+        : undefined,
     );
+  }
+
+  /**
+   * Record what this completed turn injected (memory-only observability).
+   * Skipped when skills are disabled, keeping disabled mode pristine;
+   * failed turns record nothing, mirroring history semantics.
+   */
+  private recordSkillTurn(
+    sessionId: string,
+    resolved: ResolvedTurnSkills,
+  ): void {
+    if (!this.skills.enabled) return;
+    const chars = (items: LoadedSkill[]): number =>
+      items.reduce((total, skill) => total + skill.bodyChars, 0);
+    const report: TurnSkillReport = {
+      sessionId,
+      explicit: resolved.explicit.map((skill) => skill.name),
+      contextual: resolved.contextual.map((skill) => skill.name),
+      requested: resolved.requested.map((skill) => skill.name),
+      considered: resolved.considered,
+      chars: {
+        explicit: chars(resolved.explicit),
+        requested: chars(resolved.requested),
+        contextual: chars(resolved.contextual),
+      },
+    };
+    this.skills.recordLastTurn(report);
   }
 
   listSessions(options?: { limit?: number; offset?: number }) {

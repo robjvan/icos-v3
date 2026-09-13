@@ -5,6 +5,7 @@ import type {
   CommandResult,
   SlashCommandHandler,
 } from '../commands/command-result';
+import { requireSessionId } from '../commands/session-commands';
 import type { SkillService } from './skill.service';
 
 export interface SkillCommandDeps {
@@ -30,7 +31,6 @@ class SkillsCommand implements SlashCommandHandler {
     context: CommandContext,
     args: string[],
   ): Promise<CommandResult> {
-    void context;
     const { skills } = this.deps;
     if (!skills.enabled) {
       return {
@@ -47,24 +47,18 @@ class SkillsCommand implements SlashCommandHandler {
       case 'refresh':
         return this.refresh();
       case 'use':
+        return this.use(context, rest);
       case 'drop':
+        return this.drop(context, rest);
       case 'active':
-        return {
-          kind: 'message',
-          text: `/skills ${sub.toLowerCase()} lands in M7c — explicit session activation is not yet available.`,
-          data: { pending: 'm7c' },
-        };
+        return this.active(context);
       case 'pull':
-        return {
-          kind: 'message',
-          text: '`/skills pull` lands in M7c — one-shot explicit retrieval is not yet available.',
-          data: { pending: 'm7c' },
-        };
+        return this.pull(context, rest);
       case 'suggest':
         return this.suggest(rest);
       default:
         throw new BadRequestException(
-          'Usage: /skills [show <name> | refresh | suggest <text>]',
+          'Usage: /skills [show <name> | refresh | suggest <text> | use <name> | drop <name> | active | pull <name>]',
         );
     }
   }
@@ -114,6 +108,79 @@ class SkillsCommand implements SlashCommandHandler {
         version: skill.version,
         body: skill.body,
       },
+    };
+  }
+
+  private use(context: CommandContext, args: string[]): CommandResult {
+    const sessionId = requireSessionId(context, 'skills use');
+    const [name] = args;
+    if (!name) {
+      throw new BadRequestException('Usage: /skills use <name>');
+    }
+    const pinned = this.deps.skills.useSkill(sessionId, name);
+    return {
+      kind: 'message',
+      text: `Skill "${pinned}" pinned for this session until dropped.`,
+      data: { sessionId, pinned },
+    };
+  }
+
+  private drop(context: CommandContext, args: string[]): CommandResult {
+    const sessionId = requireSessionId(context, 'skills drop');
+    const [name] = args;
+    if (!name) {
+      throw new BadRequestException('Usage: /skills drop <name>');
+    }
+    const dropped = this.deps.skills.dropSkill(sessionId, name);
+    return {
+      kind: 'message',
+      text: `Skill "${dropped}" unpinned for this session.`,
+      data: { sessionId, dropped },
+    };
+  }
+
+  private active(context: CommandContext): CommandResult {
+    const sessionId = requireSessionId(context, 'skills active');
+    const { skills } = this.deps;
+    const explicit = skills.getExplicitNames(sessionId);
+    const pending = skills.getPendingNames(sessionId);
+    const last = skills.getLastTurn(sessionId);
+    const lines = [
+      `Session skills (${sessionId.slice(0, 8)}):`,
+      `  explicit (pinned): ${explicit.length > 0 ? explicit.join(', ') : 'none'}`,
+      `  requested (staged for next turn): ${pending.length > 0 ? pending.join(', ') : 'none'}`,
+      last
+        ? `  last turn: explicit [${last.explicit.join(', ')}] + requested [${last.requested.join(', ')}] + contextual [${last.contextual.join(', ')}]`
+        : '  last turn: no skill injection yet',
+    ];
+    return {
+      kind: 'data',
+      text: lines.join('\n'),
+      data: {
+        sessionId,
+        explicit,
+        pending,
+        lastTurn: last,
+      },
+    };
+  }
+
+  private async pull(
+    context: CommandContext,
+    args: string[],
+  ): Promise<CommandResult> {
+    const sessionId = requireSessionId(context, 'skills pull');
+    const [name] = args;
+    if (!name) {
+      throw new BadRequestException('Usage: /skills pull <name>');
+    }
+    // Staged for the next turn only — never pinned. The model cannot reach
+    // this path by emitting text; only the command/runtime path stages.
+    const staged = await this.deps.skills.stageOneShot(sessionId, name);
+    return {
+      kind: 'message',
+      text: `Skill "${staged}" staged for the next turn only (not pinned).`,
+      data: { sessionId, staged },
     };
   }
 

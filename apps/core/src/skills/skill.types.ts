@@ -48,8 +48,8 @@ export interface SelectionBudget {
   maxChars: number;
 }
 
-/** Scope of a skill injected into model context. */
-export type SkillScope = 'explicit' | 'requested' | 'contextual';
+/** Scope of a skill injected into model context (delimiter-visible). */
+export type SkillScope = 'explicit' | 'turn-explicit' | 'contextual';
 
 /** Per-session record of the most recent turn's skill usage (M7c).
  * Memory-only observability — never persisted, never a memory event. */
@@ -63,4 +63,6 @@ export interface TurnSkillReport {
   requested: string[];
   /** Discovery candidates admitted or budget-rejected. */
   considered: SkillMatch[];
+  /** Injected body chars per scope, summed at injection time. */
+  chars: { explicit: number; requested: number; contextual: number };
 }

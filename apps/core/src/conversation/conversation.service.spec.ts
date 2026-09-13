@@ -132,6 +132,7 @@ function setup(
     new SkillService(config),
     config,
   );
+  const skills = new SkillService(config);
   return {
     service: new ConversationService(
       store,
@@ -139,6 +140,7 @@ function setup(
       extractor,
       candidates,
       commands,
+      skills,
       config,
     ),
     repository,

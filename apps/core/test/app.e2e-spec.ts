@@ -563,6 +563,100 @@ describe('Conversation (e2e)', () => {
     expect(chat).not.toHaveBeenCalled();
   });
 
+  it('M7c turn scopes: explicit pins, one-shot pulls, contextual discovery', async () => {
+    type WireMessage = { role: string; content: string };
+    const sent = (call: number): WireMessage[] =>
+      (
+        chat.mock.calls[call][0] as {
+          messages: WireMessage[];
+          sessionId: string;
+        }
+      ).messages;
+
+    const skillsDir = join(dir, 'skills');
+    mkdirSync(join(skillsDir, 'demo'), { recursive: true });
+    writeFileSync(
+      join(skillsDir, 'demo', 'SKILL.md'),
+      '---\nname: demo\ndescription: Demo skill for journal work.\n---\n\nDo demo things.\n',
+    );
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills refresh' })
+      .expect(200);
+
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello there friend' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+    // Clean turn: catalog block present, no skill bodies.
+    expect(sent(0)[0]?.content).toContain('<available_skills>');
+    expect(sent(0).some((m) => m.content.includes('<skill '))).toBe(false);
+
+    // Explicit pin: every subsequent turn carries scope="explicit".
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills use demo', sessionId })
+      .expect(200);
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'journal time', sessionId })
+      .expect(200);
+    expect(
+      sent(1).find((m) => m.content.includes('scope="explicit"')),
+    ).toMatchObject({ role: 'system' });
+    // Already-included: discovery does not duplicate it as contextual.
+    expect(sent(1).some((m) => m.content.includes('contextual'))).toBe(false);
+
+    const active = await request(http())
+      .get('/core/skills/active')
+      .query({ sessionId })
+      .expect(200);
+    expect(active.body).toMatchObject({
+      sessionId,
+      explicit: ['demo'],
+      requested: [],
+    });
+
+    // One-shot pull: next turn only, then gone, never pinned.
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills drop demo', sessionId })
+      .expect(200);
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: '/skills pull demo', sessionId })
+      .expect(200);
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'sourdough starter ratios', sessionId })
+      .expect(200);
+    expect(
+      sent(2).find((m) => m.content.includes('scope="turn-explicit"')),
+    ).toBeDefined();
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'another plain message', sessionId })
+      .expect(200);
+    expect(sent(3).some((m) => m.content.includes('<skill '))).toBe(false);
+
+    // Auto-discovery: relevant turn loads it contextually, unpinned.
+    await request(http())
+      .post('/core/conversation')
+      .send({ message: 'journal work begins', sessionId })
+      .expect(200);
+    expect(
+      sent(4).find((m) => m.content.includes('scope="contextual"')),
+    ).toMatchObject({ role: 'system' });
+
+    // Transcript holds conversation only — no skill scaffolding.
+    const history = await request(http())
+      .get(`/core/conversation/${sessionId}`)
+      .expect(200);
+    expect(JSON.stringify(history.body)).not.toContain('<skill');
+    expect(JSON.stringify(history.body)).not.toContain('<available_skills>');
+  });
+
   it('/rename titles the session and surfaces in the session list', async () => {
     const first = await request(http())
       .post('/core/conversation')

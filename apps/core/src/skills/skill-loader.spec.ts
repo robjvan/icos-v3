@@ -1,6 +1,7 @@
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -14,6 +15,7 @@ import {
   parseSkillFile,
   scanSkillDir,
 } from './skill-loader';
+import { discoverSkills } from './skill-discovery';
 
 const OPTS = { maxBodyChars: 12000 };
 
@@ -214,5 +216,50 @@ describe('scanSkillDir / loadSkillBody', () => {
     await expect(loadSkillBody(dir, 'bad-dir', OPTS)).rejects.toMatchObject({
       name: 'SkillParseError',
     });
+  });
+
+  it.each([
+    'icos-v3-stack',
+    'persona-anchor',
+    'daily-journal',
+    'comments-pass',
+    'capture-idea',
+  ])('ship seed %s parses clean under the validator', (name) => {
+    const raw = readFileSync(
+      join(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        '..',
+        'docs',
+        'skills',
+        name,
+        SKILL_FILE,
+      ),
+      'utf8',
+    );
+    const parsed = parseSkillFile(raw, OPTS);
+    expect(parsed.name).toBe(name);
+    expect(parsed.body.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('anchors discovery on the real icos-v3-stack seed', () => {
+    const seeds = join(__dirname, '..', '..', '..', '..', 'docs', 'skills');
+    const descriptors = (
+      ['icos-v3-stack', 'daily-journal', 'comments-pass'] as const
+    ).map((name) => {
+      const parsed = parseSkillFile(
+        readFileSync(join(seeds, name, SKILL_FILE), 'utf8'),
+        OPTS,
+      );
+      return {
+        name: parsed.name,
+        description: parsed.description,
+        version: parsed.version,
+      };
+    });
+    const matches = discoverSkills(descriptors, 'working on the ICOS v3 stack');
+    expect(matches[0]?.skill.name).toBe('icos-v3-stack');
   });
 });

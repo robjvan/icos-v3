@@ -60,7 +60,12 @@ function writeSkill(
 async function setup(
   dir: string,
   overrides: Partial<CoreConfig> = {},
-): Promise<{ dispatcher: CommandDispatcher; config: CoreConfig }> {
+): Promise<{
+  dispatcher: CommandDispatcher;
+  config: CoreConfig;
+  skills: SkillService;
+  store: SessionStore;
+}> {
   const config = testConfig(dir, overrides);
   const store = new SessionStore(new FakeSessionRepository(), config);
   const candidates = {
@@ -80,7 +85,7 @@ async function setup(
     skills,
     config,
   );
-  return { dispatcher, config };
+  return { dispatcher, config, skills, store };
 }
 
 describe('/skills commands', () => {
@@ -153,12 +158,17 @@ describe('/skills commands', () => {
     expect(result.text).toContain('scanned 3, loaded 2, skipped 1');
   });
 
-  it('M7c subcommands report as not yet available', async () => {
+  it('session-scoped subcommands require an active session', async () => {
     const { dispatcher } = await setup(dir);
-    for (const sub of ['use x', 'drop x', 'active', 'pull x']) {
-      const result = await dispatcher.dispatch(`/skills ${sub}`);
-      expect(result.kind).toBe('message');
-      expect(result.text).toMatch(/not yet available/);
+    for (const message of [
+      '/skills use daily-journal',
+      '/skills drop daily-journal',
+      '/skills active',
+      '/skills pull daily-journal',
+    ]) {
+      await expect(dispatcher.dispatch(message)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     }
   });
 
@@ -196,5 +206,103 @@ describe('/skills commands', () => {
     const show = await dispatcher.dispatch('/skills show daily-journal');
     expect(show.kind).toBe('message');
     expect(show.text).toContain('Skills are disabled');
+  });
+
+  it('/skills use/drop/active round-trips a pinned skill', async () => {
+    const { dispatcher, store } = await setup(dir);
+    const { id } = await store.resolve(undefined);
+    await expect(dispatcher.dispatch('/skills use')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      dispatcher.dispatch('/skills use nope', id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    const used = await dispatcher.dispatch('/skills use daily-journal', id);
+    expect(used.text).toContain('"daily-journal" pinned');
+    const active = await dispatcher.dispatch('/skills active', id);
+    expect(active.kind).toBe('data');
+    expect(active.text).toContain('explicit (pinned): daily-journal');
+    const dropped = await dispatcher.dispatch('/skills drop daily-journal', id);
+    expect(dropped.text).toContain('unpinned');
+    const quiet = await dispatcher.dispatch('/skills active', id);
+    expect(quiet.text).toContain('explicit (pinned): none');
+  });
+
+  it('/skills activation requires a session and honors the cap', async () => {
+    const { dispatcher, store } = await setup(dir, {
+      skillsMaxActivePerSession: 1,
+    });
+    await expect(
+      dispatcher.dispatch('/skills use daily-journal'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(dispatcher.dispatch('/skills active')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    const { id } = await store.resolve(undefined);
+    await dispatcher.dispatch('/skills use daily-journal', id);
+    await expect(
+      dispatcher.dispatch('/skills use capture-idea', id),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('/skills pull stages one turn without pinning', async () => {
+    const { dispatcher, store, skills } = await setup(dir);
+    const { id } = await store.resolve(undefined);
+    await expect(dispatcher.dispatch('/skills pull')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      dispatcher.dispatch('/skills pull nope', id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    const pulled = await dispatcher.dispatch('/skills pull daily-journal', id);
+    expect(pulled.text).toContain('staged for the next turn only');
+    expect(skills.getExplicitNames(id)).toEqual([]);
+    expect(skills.getPendingNames(id)).toEqual(['daily-journal']);
+  });
+
+  it('/skills pull fails fast over budget', async () => {
+    const { dispatcher, store, skills } = await setup(dir, {
+      skillsMaxContextChars: 5,
+    });
+    const { id } = await store.resolve(undefined);
+    await expect(
+      dispatcher.dispatch('/skills pull daily-journal', id),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(skills.getPendingNames(id)).toEqual([]);
+  });
+
+  it('/fork copies pins but not staged one-shots', async () => {
+    const { dispatcher, store, skills } = await setup(dir);
+    const { id } = await store.resolve(undefined);
+    await store.append(id, { role: 'user', content: 'hi' });
+    await dispatcher.dispatch('/skills use daily-journal', id);
+    await dispatcher.dispatch('/skills pull capture-idea', id);
+    const forked = await dispatcher.dispatch('/fork', id);
+    const forkId = forked.sessionId;
+    expect(forkId).toBeDefined();
+    if (!forkId) throw new Error('fork returned no session');
+    expect(skills.getExplicitNames(forkId)).toEqual(['daily-journal']);
+    expect(skills.getPendingNames(forkId)).toEqual([]);
+    expect(skills.getLastTurn(forkId)).toBeNull();
+  });
+
+  it('/undo leaves the pin set alone', async () => {
+    const { dispatcher, store, skills } = await setup(dir);
+    const { id } = await store.resolve(undefined);
+    await store.append(id, { role: 'user', content: 'hi' });
+    await store.append(id, { role: 'assistant', content: 'yo' });
+    await dispatcher.dispatch('/skills use daily-journal', id);
+    await dispatcher.dispatch('/undo', id);
+    expect(skills.getExplicitNames(id)).toEqual(['daily-journal']);
+  });
+
+  it('/status reports the skills catalog and session pins', async () => {
+    const { dispatcher, store } = await setup(dir);
+    const bare = await dispatcher.dispatch('/status');
+    expect(bare.text).toContain('Skills: enabled, catalog 2');
+    const { id } = await store.resolve(undefined);
+    await dispatcher.dispatch('/skills use daily-journal', id);
+    const withSession = await dispatcher.dispatch('/status', id);
+    expect(withSession.text).toContain('Skills pinned: daily-journal');
   });
 });

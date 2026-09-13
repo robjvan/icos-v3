@@ -10,8 +10,12 @@ import type {
   SlashCommandHandler,
 } from './command-result';
 import { DisplayPreferenceStore } from './display-preferences';
+import { SkillService } from '../skills/skill.service';
 
-function requireSessionId(context: CommandContext, command: string): string {
+export function requireSessionId(
+  context: CommandContext,
+  command: string,
+): string {
   if (!context.sessionId) {
     throw new BadRequestException(
       `"/${command}" needs an active session — send a message first.`,
@@ -46,10 +50,61 @@ function packageVersion(): string {
   return '0.0.0';
 }
 
+function renderSkillsSummary(skills: SkillService): string {
+  if (!skills.enabled) return 'Skills: disabled';
+  return `Skills: enabled, catalog ${String(skills.listDescriptors().length)}`;
+}
+
+function skillsSummaryData(skills: SkillService): Record<string, unknown> {
+  return {
+    enabled: skills.enabled,
+    catalogSize: skills.listDescriptors().length,
+  };
+}
+
+function renderSessionSkills(
+  skills: SkillService,
+  sessionId: string,
+): string[] {
+  if (!skills.enabled) return [];
+  const explicit = skills.getExplicitNames(sessionId);
+  const lines = [
+    `Skills pinned: ${explicit.length > 0 ? explicit.join(', ') : 'none'}`,
+  ];
+  const pending = skills.getPendingNames(sessionId);
+  if (pending.length > 0) {
+    lines.push(`Skills staged: ${pending.join(', ')}`);
+  }
+  const last = skills.getLastTurn(sessionId);
+  if (last) {
+    lines.push(
+      `Last turn skills: explicit ${String(last.chars.explicit)} + ` +
+        `requested ${String(last.chars.requested)} + ` +
+        `contextual ${String(last.chars.contextual)} chars`,
+    );
+    const names = [...last.explicit, ...last.requested, ...last.contextual];
+    if (names.length > 0) lines.push(`  (${names.join(', ')})`);
+  }
+  return lines;
+}
+
+function sessionSkillsData(
+  skills: SkillService,
+  sessionId: string,
+): Record<string, unknown> {
+  return {
+    enabled: skills.enabled,
+    explicit: skills.getExplicitNames(sessionId),
+    pending: skills.getPendingNames(sessionId),
+    lastTurn: skills.getLastTurn(sessionId),
+  };
+}
+
 export interface SessionCommandDeps {
   sessions: SessionStore;
   config: CoreConfig;
   prefs: DisplayPreferenceStore;
+  skills: SkillService;
   /** Current in-flight SSE streams, for `/status` honesty. */
   activeStreams: () => number;
 }
@@ -60,14 +115,16 @@ class StatusCommand implements SlashCommandHandler {
   constructor(private readonly deps: SessionCommandDeps) {}
 
   async execute(context: CommandContext): Promise<CommandResult> {
-    const { sessions, config, prefs, activeStreams } = this.deps;
+    const { sessions, config, prefs, skills, activeStreams } = this.deps;
     const lines = [`Runtime: icos/${packageVersion()}`];
     lines.push(`Provider: ${config.provider} · Model: ${config.llmModel}`);
+    lines.push(renderSkillsSummary(skills));
     const data: Record<string, unknown> = {
       provider: config.provider,
       model: config.llmModel,
       runtime: `icos/${packageVersion()}`,
       activeStreams: activeStreams(),
+      skills: skillsSummaryData(skills),
     };
     if (context.sessionId) {
       const session = await requireSession(
@@ -86,6 +143,7 @@ class StatusCommand implements SlashCommandHandler {
         `Created: ${session.createdAt} · Updated: ${session.updatedAt}`,
         `Streaming: ${activeStreams() > 0 ? `${activeStreams()} active` : 'idle'}`,
         `Display: thinking=${display.showThinking ? 'on' : 'off'}, timestamps=${display.showTimestamps ? 'on' : 'off'}`,
+        ...renderSessionSkills(skills, session.id),
       );
       Object.assign(data, {
         sessionId: session.id,
@@ -96,6 +154,7 @@ class StatusCommand implements SlashCommandHandler {
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         display,
+        sessionSkills: sessionSkillsData(skills, session.id),
       });
     } else {
       lines.push('Session: none (send a message to start one)');
@@ -235,6 +294,9 @@ class ForkCommand implements SlashCommandHandler {
     const sessionId = requireSessionId(context, 'fork');
     await requireSession(this.deps.sessions, sessionId, 'fork');
     const newId = await this.deps.sessions.forkSession(sessionId);
+    // Pinned procedures carry over ("continue from here"); staged one-shots
+    // and last-turn reports are turn-scoped and stay behind.
+    this.deps.skills.copyExplicitPins(sessionId, newId);
     return {
       kind: 'session',
       sessionId: newId,
