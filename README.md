@@ -99,7 +99,7 @@ It exists primarily as a controlled environment for experimenting with agent arc
 
 ## Current Status
 
-**M1–M6 are complete.**
+**M1–M7 are complete.**
 
 The current system provides:
 
@@ -116,7 +116,7 @@ The current system provides:
 - Structured clarification requests
 - Standard-format skills support
 
-The next milestone is **M7: Skill Usage**.
+The next milestone is **M8: Tools**.
 
 Development is active and the architecture is expected to change substantially as new capabilities are introduced.
 
