@@ -6,7 +6,7 @@
   observability (plan: `.reference/plans/milestone-7-skills.md`, rev.3;
   closes M7)
 - **Date:** 2026-09-13
-- **App:** `apps/core/` (NestJS), port `3100` (main run) + `3101`
+- **App:** `core/` (NestJS), port `3100` (main run) + `3101`
   (budget drill)
 - **LLM config:** stock local `.env` — OpenRouter,
   `deepseek/deepseek-v4-flash-0731`. Only `PORT`, `SESSION/MEMORY_DB_PATH`,
@@ -35,7 +35,7 @@ PORT=3100 SESSION_DB_PATH=/tmp/icos-m7c/sessions.sqlite \
 
 Turns (all `POST /core/conversation`, session pinned from turn 1):
 
-1. `"Today we are working on the ICOS v3 stack. Can apps/core import epistemic-memory directly? Answer yes or no first, then at most ten more words."`
+1. `"Today we are working on the ICOS v3 stack. Can core import epistemic-memory directly? Answer yes or no first, then at most ten more words."`
 2. `"What is the current architecture? Twenty words or fewer."`
 3. `"Sourdough starter ratios. Reply BREAD, nothing else."`
 4. `/skills use daily-journal`, then the bread message again

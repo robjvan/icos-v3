@@ -1,7 +1,7 @@
 # Provider Swap Evidence — llama.cpp + Phi-4-mini-reasoning
 
 Date: 2026-09-10
-App: `apps/core/`, unchanged (no code, config, or restart; same browser page session)
+App: `core/`, unchanged (no code, config, or restart; same browser page session)
 
 ## Setup
 

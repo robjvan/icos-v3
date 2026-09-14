@@ -1,7 +1,7 @@
 # Milestone 4 — Extraction Evidence (split roles, live battery)
 
 Date: 2026-09-10
-App: `apps/core/` (NestJS, port 3100, isolated DB at `/tmp/icos-m4data2/core.sqlite`)
+App: `core/` (NestJS, port 3100, isolated DB at `/tmp/icos-m4data2/core.sqlite`)
 Conversation model: Ollama `gemma4-e4b-unc:latest` (`LLM_*`)
 Extraction model: Ollama `violet:latest` (`MEMORY_LLM_*`) — different model, same provider here; config boundary supports fully separate providers.
 

@@ -1,7 +1,7 @@
-# Milestone 1 — Minimum Conversation Loop Slice (`apps/core/`)
+# Milestone 1 — Minimum Conversation Loop Slice (`core/`)
 
 Status: implemented (2026-09-09) — verified live against Ollama (`violet:latest` via `/v1/chat/completions`); `tsc`, `eslint`, 22 unit + 4 e2e tests green.
-Scope: `apps/core/` only. No changes to memory, sentinel, interfaces.
+Scope: `core/` only. No changes to memory, sentinel, interfaces.
 Spec refs: `.reference/notes/core.md` (Conversation Processing, Model Providers, Context Construction, Minimal Runtime), `.reference/notes/overview.md` (port 3000).
 
 ## 1. Goal
@@ -20,7 +20,7 @@ streaming, persisted sessions, provider abstraction, memory recall/consolidation
 
 ## 3. Current state
 
-- `apps/core/src/`: empty Nest starter. `CoreController` (`core` prefix, no routes), empty `CoreService`, `main.ts` listens on `PORT ?? 3000`.
+- `core/src/`: empty Nest starter. `CoreController` (`core` prefix, no routes), empty `CoreService`, `main.ts` listens on `PORT ?? 3000`.
 - Deps: `@nestjs/common,core,platform-express`, `dotenv`. No HTTP client, validation, or config checking.
 - `.env.sample`: `PORT, LLM_MODEL, LLM_PROVIDER, LLM_BASE_URL` — no defaults, no key/timeout vars.
 - Tests: only `core.controller.spec.ts`.
@@ -41,7 +41,7 @@ Error mapping: `400` empty message; `502` provider error / empty choice; `504` n
 
 ## 5. Changes
 
-### New files (`apps/core/src/`)
+### New files (`core/src/`)
 
 - `conversation/conversation.module.ts` — composes controller + service + store + LLM client.
 - `conversation/conversation.controller.ts` — `POST /core/conversation`, `GET /core/conversation/:id`, `ValidationPipe` DTOs.
@@ -73,7 +73,7 @@ Error mapping: `400` empty message; `502` provider error / empty choice; `504` n
 
 ## 7. Verification
 
-1. `npm install && npm test && npm run test:e2e` green in `apps/core/`.
+1. `npm install && npm test && npm run test:e2e` green in `core/`.
 2. Live boot: `LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=<model> npm run start:dev`.
 3. Manual:
 ```bash

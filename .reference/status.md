@@ -57,11 +57,11 @@
 
 ## Planned
 
-- [ ] M8: Tools integration
+- [ ] M8: Tool integration
 - [ ] M9: First complete agent loop
 - [ ] M10: Build the epistemic memory
-  - [ ] M10a: Epistemic Claim Model
-  - [ ] M10b: Evidence → Claim processing
+  - [ ] M10a: Epistemic claim model
+  - [ ] M10b: Evidence → claim processing
   - [ ] M10c: Contradiction / reinforcement
   - [ ] M10d: RuVector substrate
 - [ ] M11: Memory retrieval / application
@@ -72,15 +72,23 @@
 - [ ] M12: Memory dynamics
   - [ ] M12a: Consolidation
   - [ ] M12b: Supersession
-  - [ ] M12c: Decay/forgetting
+  - [ ] M12c: Decay / forgetting
   - [ ] M12d: Temporal reasoning
   - [ ] M12e: Belief revision
+- [ ] M13: MCP server support
+- [ ] M14: Persistent persona maintenance
+- [ ] M15: Drift detection and hallucination mitigation
+- [ ] M16: Discord, email, and SMS integrations
+- [ ] M17: Autonomous agency and action execution from a registry
+- [ ] M18: External sensory reintegration (Brio, microphone, sensor box)
+- [ ] M19: Subagent support
+- [ ] M20: Reactionary events
+  - Agent can autonomously react to external events without requiring a conversational turn
+- [ ] M21: Knowledge-base stewardship
 
-## Deferred
+## Deferred / Under Consideration
 
-- [ ] Subagents
 - [ ] Episodic consolidation
-- [ ] Calendar integration
 - [ ] Knowledge-source synchronization
 
 ## Research / Open Questions

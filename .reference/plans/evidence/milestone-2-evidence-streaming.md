@@ -1,7 +1,7 @@
 # Milestone 2 — Streaming Evidence (`gemma4-e4b-unc:latest`)
 
 Date: 2026-09-10
-App: `apps/core/` (NestJS, `node dist/main`, port 3100 for the test)
+App: `core/` (NestJS, `node dist/main`, port 3100 for the test)
 LLM: Ollama OpenAI-compatible endpoint, `LLM_BASE_URL=http://localhost:11434/v1`, `LLM_MODEL=gemma4-e4b-unc:latest`
 
 Endpoint: `POST /core/conversation/stream` (SSE: `meta` → `token`* → `done` | `error`).

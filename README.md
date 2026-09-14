@@ -127,7 +127,7 @@ Development is active and the architecture is expected to change substantially a
 ICOS v3 is being developed as a sequence of increasingly capable experiments.
 
 | Milestone | Question |
-|---|---|
+|:---:|---|
 | **M1** | *Can it talk?* |
 | **M2** | *Can it stream?* |
 | **M3** | *Can it remember what happened?* |
@@ -140,6 +140,17 @@ ICOS v3 is being developed as a sequence of increasingly capable experiments.
 | **M10** | *Can it form knowledge?* |
 | **M11** | *Can it retrieve and use that knowledge?* |
 | **M12** | *Can that knowledge evolve?* |
+| **M13** | *Can it expose its capabilities to other systems?* |
+| **M14** | *Can it maintain a persistent persona?* |
+| **M15** | *Can it detect and correct its own drift?* |
+| **M16** | *Can it communicate through external channels?* |
+| **M17** | *Can it autonomously select and execute actions?* |
+| **M18** | *Can it perceive the world beyond conversation?* |
+| **M19** | *Can it delegate work to other agents?* |
+| **M20** | *Can it react to external events without requiring a conversational turn?* |
+| **M21** | *Can it steward its own knowledge base?* |
+| **Deferred** | ***Episodic consolidation:*** *Can experiences be abstracted into knowledge?* |
+| **Deferred** | ***Source synchronization:*** *Can knowledge stay aligned with the world?* |
 
 Each milestone is tracked in:
 
@@ -179,7 +190,7 @@ Clone the repository:
 
 ```sh
 git clone https://git.exilelogic.ca/robjvan/icos-v3.git
-cd icos-v3/apps/core
+cd icos-v3/core
 ```
 
 Install dependencies:
@@ -225,7 +236,7 @@ The exact variables and defaults may change as development continues, so **`.env
 From the repository root:
 
 ```sh
-cd apps/core
+cd core
 npm run start
 ```
 
@@ -261,42 +272,48 @@ npm test
 
 At its current stage, ICOS intentionally has a small architecture.
 
-```text
-                    ┌─────────────────────┐
-                    │      User / UI      │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Interaction Layer   │
-                    │ commands / approval │
-                    │ clarification        │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │     Agent Loop      │
-                    └──────────┬──────────┘
-                               │
-                ┌──────────────┼──────────────┐
-                ▼              ▼              ▼
-        ┌──────────────┐ ┌─────────────┐ ┌──────────────┐
-        │   Session    │ │     LLM     │ │   Skills /   │
-        │   Store      │ │   Boundary  │ │   Capabilities│
-        └──────────────┘ └─────────────┘ └──────────────┘
-                │
-                ▼
-        ┌──────────────────┐
-        │ Memory Candidates│
-        │ / FTS5 / SQLite  │
-        └──────────────────┘
+```mermaid
+flowchart TD
+%%{init: {"layout": "elk"}}%%
+User["<b>User / UI</b>"]
+
+Interaction["<b>Interaction Layer</b><br/>commands / approval<br/>clarification"]
+
+Agent["<b>Agent Loop</b><br/>context / decision<br/>tool execution"]
+
+Sessions["<b>Sessions</b><br/>SQLite / FTS5<br/>conversation"]
+
+LLM["<b>LLM Boundary</b><br/>provider-independent"]
+
+Capabilities["<b>Capabilities</b><br/>skills / tools /<br/>external actions"]
+
+Provider["<b>Model Provider</b>"]
+
+Evidence["<b>Evidence / Activity</b><br/>conversation / actions<br/>observations"]
+
+MemCandidates["<b>Memory Candidates</b><br/>evidence / claims<br/>experimental"]
+
+EpistemicMem["<b>Epistemic Memory</b><br/>(M10 → M12)<br/>knowledge / retrieval<br/>revision / evolution"]
+
+User --> Interaction --> Agent
+
+Agent --> Sessions
+Agent --> LLM
+Agent --> Capabilities
+
+LLM --> Provider
+
+Sessions --> Evidence
+Capabilities --> Evidence
+
+Evidence --> MemCandidates
+MemCandidates --> EpistemicMem
+
+%% Experimental / planned components
+style EpistemicMem stroke-dasharray: 5 5
 ```
 
-This diagram will evolve.
-
-That's intentional.
-
-The architecture should grow in response to demonstrated requirements rather than speculative future requirements.
+Current architecture: ICOS v3 is intentionally small. Some components shown above represent planned capabilities rather than fully implemented subsystems. The architecture grows as each milestone provides a reason to introduce the next layer.
 
 ---
 

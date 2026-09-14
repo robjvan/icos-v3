@@ -1,7 +1,7 @@
 import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
-import { LlmClient } from '../llm/llm.client';
-import type { LlmEndpointConfig } from '../llm/llm.client';
+import { LlmClient } from './llm.client';
+import type { LlmEndpointConfig } from './llm.client';
 import { MEMORY_LLM_CLIENT } from '../memory/llm-memory-candidate-extractor';
 
 /** Map the LLM_* role configuration to endpoint values. */

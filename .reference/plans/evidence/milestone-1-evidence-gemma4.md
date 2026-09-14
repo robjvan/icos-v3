@@ -1,7 +1,7 @@
 # Milestone 1 — Live Evidence (`gemma4-e4b-unc:latest`)
 
 Date: 2026-09-09
-App: `apps/core/` (NestJS, `node dist/main`)
+App: `core/` (NestJS, `node dist/main`)
 LLM: Ollama OpenAI-compatible endpoint, `LLM_BASE_URL=http://localhost:11434/v1`, `LLM_MODEL=gemma4-e4b-unc:latest`
 
 ## Commands

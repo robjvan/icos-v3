@@ -75,7 +75,11 @@ export class LlmClient {
   ) {}
 
   buildUrl(): string {
-    return `${this.config.llmBaseUrl}`;
+    if (this.config.llmModel.includes('muse')) {
+      return `${this.config.llmBaseUrl}/responses`;
+    } else {
+      return `${this.config.llmBaseUrl}/chat/completions`;
+    }
   }
 
   async chat(request: LlmChatRequest): Promise<ChatResult> {

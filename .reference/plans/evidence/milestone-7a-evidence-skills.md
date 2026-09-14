@@ -5,7 +5,7 @@
 - **Milestone:** M7a — Skill storage, validation, loading, and registry
   (plan: `.reference/plans/milestone-7-skills.md`)
 - **Date:** 2026-09-13
-- **App:** `apps/core/` (NestJS), served same-origin test client at `/`
+- **App:** `core/` (NestJS), served same-origin test client at `/`
 - **Launch:** `node dist/main` (fresh `npm run build`), port `3100`
 - **LLM config:** `LLM_MODEL=m7a-dummy-no-server` (explicit override).
   `LLM_BASE_URL` / `LLM_API_KEY` came from the local `.env` (OpenRouter

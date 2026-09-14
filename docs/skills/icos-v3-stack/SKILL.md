@@ -9,7 +9,7 @@ version: 0.1.0
 You are working inside the ICOS v3 cognitive stack — an experimental
 agent runtime, not a commercial product.
 
-Distinguish the correct v3 service before changes begin: `apps/core`
+Distinguish the correct v3 service before changes begin: `core`
 (conversation runtime), `apps/epistemic-memory` (memory subsystem), and
 `apps/model-sentinel` (drift/hallucination mitigation). Apps never import
 one another; all LLM access goes through the OpenAI-compatible interface.

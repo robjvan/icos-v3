@@ -6,7 +6,7 @@ Scope: deterministic command layer only (M6b approvals + M6c clarifications defe
 ## Design decisions (user-confirmed)
 
 - Ingress: auto-detect in `POST /core/conversation` and `/stream`. Leading-`/` input routes to the dispatcher before any LLM processing; a command can never reach the LLM.
-- UI: repo has no dedicated client; `apps/core/test-client.html` (served at `/`) renders command results. All results are structured (`kind`/`text`/`data`) for future Web/Desktop clients.
+- UI: repo has no dedicated client; `core/test-client.html` (served at `/`) renders command results. All results are structured (`kind`/`text`/`data`) for future Web/Desktop clients.
 - `/rename`: new nullable `sessions.title` column + idempotent migration. Title preferred over computed preview in listings.
 - `/undo`: reversible `messages.excluded_from_context` flag. Transcript never loses rows; context queries filter; history flags.
 - `/thinking`: M6a display-visibility toggle only. Becomes the `/variant` alias when model reasoning control lands (per notes).
