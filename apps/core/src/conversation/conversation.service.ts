@@ -1,0 +1,329 @@
+import {
+  BadGatewayException,
+  BadRequestException,
+  GatewayTimeoutException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { CORE_CONFIG } from '../config';
+import type { CoreConfig } from '../config';
+import { CommandDispatcher } from '../commands/command-dispatcher';
+import type { CommandResult } from '../commands/command-result';
+import { LlmClient, LlmError } from '../llm/llm.client';
+import type { ChatMessage } from '../llm/llm.client';
+import { EXTRACTION_VERSION } from '../memory/extraction.prompt';
+import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
+import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { SkillService } from '../skills/skill.service';
+import type { ResolvedTurnSkills } from '../skills/skill.service';
+import type { LoadedSkill, TurnSkillReport } from '../skills/skill.types';
+import { InvalidSearchQueryError } from '../session/session.repository';
+import type { SessionSearchResult } from '../session/session.repository';
+import { buildContext } from './context.builder';
+import { SessionStore } from './session.store';
+import type { HistoryMessage } from './session.store';
+
+export type ConversationStreamEvent =
+  | { type: 'meta'; sessionId: string; model: string }
+  | { type: 'token'; content: string }
+  | {
+      type: 'done';
+      reply: string;
+      model: string;
+      command?: CommandPayload;
+    }
+  | { type: 'error'; message: string };
+
+/** Structured command outcome for chat surfaces and future clients. */
+export interface CommandPayload {
+  kind: CommandResult['kind'];
+  data?: Record<string, unknown>;
+}
+
+/** Model tag for deterministic command replies (never an LLM reply). */
+const COMMAND_MODEL = 'core';
+
+@Injectable()
+export class ConversationService {
+  private readonly logger = new Logger(ConversationService.name);
+
+  constructor(
+    private readonly sessions: SessionStore,
+    private readonly llm: LlmClient,
+    private readonly extractor: MemoryCandidateExtractor,
+    private readonly candidates: MemoryCandidateRepository,
+    private readonly commands: CommandDispatcher,
+    private readonly skills: SkillService,
+    @Inject(CORE_CONFIG) private readonly config: CoreConfig,
+  ) {}
+
+  async converse(
+    message: string,
+    sessionId?: string,
+  ): Promise<{
+    sessionId: string;
+    reply: string;
+    model: string;
+    command?: CommandPayload;
+  }> {
+    // Slash commands short-circuit before conversation: no LLM, no
+    // transcript writes, no memory extraction.
+    if (this.commands.isCommand(message)) {
+      const result = await this.commands.dispatch(message, sessionId);
+      return {
+        sessionId: result.sessionId ?? sessionId ?? '',
+        reply: result.text,
+        model: COMMAND_MODEL,
+        command: toPayload(result),
+      };
+    }
+    const { id } = await this.sessions.resolve(sessionId);
+    const history = await this.sessions.getContextMessages(id);
+    const turnSkills = await this.skills.resolveTurnSkills(id, message);
+    const messages = this.prepareMessages(history, message, turnSkills);
+
+    // TODO(core.md): sentinel.evaluate goes here — assess the model
+    // response (VALID / REVISE / RETRY / ...) before trusting it.
+
+    // TODO(core.md): tool dispatch goes here — DECISION may ACT via
+    // tools and feed observations back into the loop.
+
+    try {
+      const { content, model } = await this.llm.chat({
+        messages,
+        sessionId: id,
+      });
+      const userRecord = await this.sessions.append(id, {
+        role: 'user',
+        content: message,
+      });
+      await this.sessions.append(id, { role: 'assistant', content });
+      this.recordSkillTurn(id, turnSkills);
+      this.extractTurn({
+        sessionId: id,
+        userMessageId: userRecord.id,
+        userMessage: message,
+        assistantMessage: content,
+        context: history,
+      });
+      return { sessionId: id, reply: content, model };
+    } catch (err) {
+      if (err instanceof LlmError) {
+        if (err.httpStatus === 504) {
+          throw new GatewayTimeoutException(err.message);
+        }
+        throw new BadGatewayException(err.message);
+      }
+      throw err;
+    }
+  }
+
+  async history(sessionId: string): Promise<{
+    sessionId: string;
+    messages: HistoryMessage[];
+  }> {
+    const messages = await this.sessions.getHistory(sessionId);
+    if (!messages) {
+      throw new NotFoundException(`Unknown session "${sessionId}"`);
+    }
+    return { sessionId, messages };
+  }
+
+  /**
+   * Streaming variant of the loop. History is appended only on clean
+   * completion; mid-stream failures emit `error` and store nothing.
+   */
+  async converseStream(
+    message: string,
+    sessionId: string | undefined,
+    emit: (event: ConversationStreamEvent) => void,
+    clientSignal?: AbortSignal,
+  ): Promise<void> {
+    // Commands ride the stream as `meta` → `done` with no `token`
+    // events: no LLM contact, nothing persisted as conversation.
+    if (this.commands.isCommand(message)) {
+      try {
+        const result = await this.commands.dispatch(message, sessionId);
+        const activeId = result.sessionId ?? sessionId;
+        if (activeId) {
+          emit({ type: 'meta', sessionId: activeId, model: COMMAND_MODEL });
+        }
+        emit({
+          type: 'done',
+          reply: result.text,
+          model: COMMAND_MODEL,
+          command: toPayload(result),
+        });
+      } catch (err) {
+        emit({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+      return;
+    }
+    const { id } = await this.sessions.resolve(sessionId);
+    const history = await this.sessions.getContextMessages(id);
+    const turnSkills = await this.skills.resolveTurnSkills(id, message);
+    const messages = this.prepareMessages(history, message, turnSkills);
+
+    // TODO(core.md): sentinel.evaluate (streaming) goes here.
+    // TODO(core.md): tool dispatch goes here.
+
+    CommandDispatcher.trackStreamStart();
+    try {
+      emit({ type: 'meta', sessionId: id, model: this.config.llmModel });
+      try {
+        const { content, model } = await this.llm.chatStream(
+          { messages, sessionId: id },
+          { onToken: (token) => emit({ type: 'token', content: token }) },
+          clientSignal,
+        );
+        const userRecord = await this.sessions.append(id, {
+          role: 'user',
+          content: message,
+        });
+        await this.sessions.append(id, { role: 'assistant', content });
+        this.recordSkillTurn(id, turnSkills);
+        this.extractTurn({
+          sessionId: id,
+          userMessageId: userRecord.id,
+          userMessage: message,
+          assistantMessage: content,
+          context: history,
+        });
+        emit({ type: 'done', reply: content, model });
+      } catch (err) {
+        emit({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+    } finally {
+      CommandDispatcher.trackStreamEnd();
+    }
+  }
+
+  private prepareMessages(
+    history: ChatMessage[],
+    message: string,
+    turnSkills?: ResolvedTurnSkills,
+  ): ChatMessage[] {
+    // TODO(core.md): memory.recall goes here — retrieve relevant memories
+    // for { input, session, profile } before building context.
+    return buildContext(
+      this.config.systemPrompt,
+      history,
+      message,
+      this.config.maxHistory,
+      turnSkills
+        ? {
+            catalog: this.skills.buildCatalogBlock(),
+            explicit: turnSkills.explicit,
+            requested: turnSkills.requested,
+            contextual: turnSkills.contextual,
+          }
+        : undefined,
+    );
+  }
+
+  /**
+   * Record what this completed turn injected (memory-only observability).
+   * Skipped when skills are disabled, keeping disabled mode pristine;
+   * failed turns record nothing, mirroring history semantics.
+   */
+  private recordSkillTurn(
+    sessionId: string,
+    resolved: ResolvedTurnSkills,
+  ): void {
+    if (!this.skills.enabled) return;
+    const chars = (items: LoadedSkill[]): number =>
+      items.reduce((total, skill) => total + skill.bodyChars, 0);
+    const report: TurnSkillReport = {
+      sessionId,
+      explicit: resolved.explicit.map((skill) => skill.name),
+      contextual: resolved.contextual.map((skill) => skill.name),
+      requested: resolved.requested.map((skill) => skill.name),
+      considered: resolved.considered,
+      chars: {
+        explicit: chars(resolved.explicit),
+        requested: chars(resolved.requested),
+        contextual: chars(resolved.contextual),
+      },
+    };
+    this.skills.recordLastTurn(report);
+  }
+
+  listSessions(options?: { limit?: number; offset?: number }) {
+    return this.sessions.listSessions(options);
+  }
+
+  /**
+   * Fire-and-forget enrichment: runs after the turn is persisted and the
+   * response is on its way. Never blocks conversation, never fails it —
+   * extraction errors are logged and dropped.
+   */
+  private extractTurn(input: {
+    sessionId: string;
+    userMessageId: number;
+    userMessage: string;
+    assistantMessage: string;
+    context: ChatMessage[];
+  }): void {
+    if (!this.config.memoryExtractionEnabled) return;
+    void this.extractor
+      .extract({
+        sessionId: input.sessionId,
+        userMessage: { role: 'user', content: input.userMessage },
+        assistantMessage: {
+          role: 'assistant',
+          content: input.assistantMessage,
+        },
+        context: input.context,
+      })
+      .then((validated) => {
+        if (validated.length === 0) return;
+        return this.candidates.saveCandidates(
+          validated.map((candidate) => ({
+            ...candidate,
+            source: {
+              sessionId: input.sessionId,
+              messageId: input.userMessageId,
+            },
+            extractorModel: this.config.memoryLlmModel,
+            extractorVersion: EXTRACTION_VERSION,
+          })),
+        );
+      })
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Memory extraction failed for session ${input.sessionId}: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        );
+      });
+  }
+
+  async searchSessions(
+    query: string,
+    options?: { limit?: number; sessionId?: string },
+  ): Promise<SessionSearchResult[]> {
+    try {
+      return await this.sessions.searchMessages(query, options);
+    } catch (err) {
+      if (err instanceof InvalidSearchQueryError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
+  }
+}
+
+function toPayload(result: CommandResult): CommandPayload {
+  return {
+    kind: result.kind,
+    ...(result.data ? { data: result.data } : {}),
+  };
+}
