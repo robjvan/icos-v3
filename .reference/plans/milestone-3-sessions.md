@@ -1,7 +1,7 @@
 # Milestone 3 — Persistent Session Store + FTS5
 
 Status: implemented (2026-09-10) — 45 unit + 11 e2e green; live restart test vs Ollama/gemma passed, see evidence/milestone-3-evidence-sessions.md.
-Scope: `apps/core/` only. No changes to epistemic memory, Sentinel, tools, plugins, or model-provider architecture.
+Scope: `core/` only. No changes to epistemic memory, Sentinel, tools, plugins, or model-provider architecture.
 
 ## 1. Goal
 

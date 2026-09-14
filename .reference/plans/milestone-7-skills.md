@@ -379,12 +379,12 @@ transcript.
 * Registry exposes `listDescriptors()` sorted alphabetically — deterministic
   output for `/skills`, discovery, and catalog-context construction.
 * Registry is owned by a `SkillService` (`@Injectable`, in
-  `apps/core/src/skills/`), following the `DisplayPreferenceStore` /
+  `core/src/skills/`), following the `DisplayPreferenceStore` /
   `HostHealthProvider` provider pattern — not a controller, not middleware.
 
 ## 5. Configuration
 
-Extend `CoreConfig` (`apps/core/src/config.ts`) with env-driven values,
+Extend `CoreConfig` (`core/src/config.ts`) with env-driven values,
 mirroring the M5 `MEMORY_*` fallback style (explicit boundary, zero-config
 default):
 
@@ -400,7 +400,7 @@ SKILLS_MAX_CONTEXT_CHARS=8000        # cap on total skill-body chars per turn (p
 
 * `SKILLS_DIR_PATH` reuses the existing `resolvePath` helper (same `~/`
   semantics as `SESSION_DB_PATH` / `MEMORY_DB_PATH`).
-* Document all seven in `apps/core/.env.sample` with the defaults above.
+* Document all seven in `core/.env.sample` with the defaults above.
 * `SKILLS_ENABLED=false` must make the system behave exactly as pre-M7:
   no loader scan, no catalog block, no discovery, `/skills*` returns a
   deterministic "skills disabled" message, conversation byte-identical.
@@ -896,7 +896,7 @@ No skill editor, no file browser, no settings page in M7.
 
 # Configuration & File Map
 
-## New files (`apps/core/src/skills/`)
+## New files (`core/src/skills/`)
 
 ```text
 skills/skill.types.ts        — SkillDescriptor, LoadedSkill, SkillMatch,
@@ -1037,7 +1037,7 @@ Particular checks:
 
 # Verification (live)
 
-1. `npm install && npm test && npm run test:e2e` green in `apps/core/`.
+1. `npm install && npm test && npm run test:e2e` green in `core/`.
 2. Seed a live catalog:
    ```bash
    mkdir -p ~/.icos/skills

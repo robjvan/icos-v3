@@ -5,10 +5,10 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { CoreModule } from './../src/core.module';
-import { CORE_CONFIG } from './../src/config';
-import { LlmClient } from './../src/llm/llm.client';
-import { MemoryCandidateExtractor } from './../src/memory/memory-candidate-extractor';
+import { CoreModule } from '../src/core.module';
+import { CORE_CONFIG } from '../src/config';
+import { LlmClient } from '../src/llm/llm.client';
+import { MemoryCandidateExtractor } from '../src/memory/memory-candidate-extractor';
 
 describe('Conversation (e2e)', () => {
   let app: INestApplication<App> | null = null;

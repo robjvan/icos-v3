@@ -5,7 +5,7 @@
 - **Milestone:** M7b — Skill discovery (plan:
   `.reference/plans/milestone-7-skills.md`, rev.3)
 - **Date:** 2026-09-13
-- **App:** `apps/core/` (NestJS), port `3100`
+- **App:** `core/` (NestJS), port `3100`
 - **LLM config:** `LLM_MODEL=m7b-no-server` (no LLM server exists;
   discovery is pure ranking and needs none)
 - **DBs (isolated):** `SESSION_DB_PATH=/tmp/icos-m7b/sessions.sqlite`,

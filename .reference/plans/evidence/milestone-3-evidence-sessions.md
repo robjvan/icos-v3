@@ -1,7 +1,7 @@
 # Milestone 3 — Sessions Evidence (SQLite + FTS5)
 
 Date: 2026-09-10
-App: `apps/core/` (NestJS, `node dist/main`, port 3100 for the test)
+App: `core/` (NestJS, `node dist/main`, port 3100 for the test)
 LLM: Ollama, `LLM_MODEL=gemma4-e4b-unc:latest`
 DB: default `./data/core.sqlite` (auto-created with `-wal`/`-shm`; gitignored)
 

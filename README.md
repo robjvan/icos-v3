@@ -179,7 +179,7 @@ Clone the repository:
 
 ```sh
 git clone https://git.exilelogic.ca/robjvan/icos-v3.git
-cd icos-v3/apps/core
+cd icos-v3/core
 ```
 
 Install dependencies:
@@ -225,7 +225,7 @@ The exact variables and defaults may change as development continues, so **`.env
 From the repository root:
 
 ```sh
-cd apps/core
+cd core
 npm run start
 ```
 
