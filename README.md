@@ -313,7 +313,7 @@ MemCandidates --> EpistemicMem
 style EpistemicMem stroke-dasharray: 5 5
 ```
 
-Current architecture: ICOS v3 is intentionally small. Some components shown above represent planned capabilities rather than fully implemented subsystems. The architecture grows as each milestone provides a reason to introduce the next layer.
+Some components shown above represent planned capabilities rather than fully implemented subsystems. The architecture grows as each milestone provides a reason to introduce the next layer.
 
 ---
 
@@ -322,8 +322,7 @@ Current architecture: ICOS v3 is intentionally small. Some components shown abov
 The project is organized around the runtime and its experimental evidence.
 
 ```text
-apps/
-  core/                 # ICOS runtime
+core/                   # ICOS runtime
 
 .reference/
   plans/                # Milestone plans
