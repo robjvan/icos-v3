@@ -1,6 +1,6 @@
 # ICOS v3 Status Tracking
 
-> *Updated Sep 13, 2026*
+> _Updated Sep 17, 2026_
 
 ## Implemented
 
@@ -57,33 +57,21 @@
 
 ## Planned
 
+> _See `full-roadmap-extended.md` for full details._
+
 - [ ] M8: Tool integration
-- [ ] M9: First complete agent loop
+- [ ] M9: Agent Orchestration
 - [ ] M10: Build the epistemic memory
-  - [ ] M10a: Epistemic claim model
-  - [ ] M10b: Evidence → claim processing
-  - [ ] M10c: Contradiction / reinforcement
-  - [ ] M10d: RuVector substrate
 - [ ] M11: Memory retrieval / application
-  - [ ] M11a: Contextual recall
-  - [ ] M11b: Memory ranking
-  - [ ] M11c: Cross-memory comparison
-  - [ ] M11d: Memory-aware context construction
 - [ ] M12: Memory dynamics
-  - [ ] M12a: Consolidation
-  - [ ] M12b: Supersession
-  - [ ] M12c: Decay / forgetting
-  - [ ] M12d: Temporal reasoning
-  - [ ] M12e: Belief revision
 - [ ] M13: MCP server support
 - [ ] M14: Persistent persona maintenance
 - [ ] M15: Drift detection and hallucination mitigation
-- [ ] M16: Discord, email, and SMS integrations
-- [ ] M17: Autonomous agency and action execution from a registry
-- [ ] M18: External sensory reintegration (Brio, microphone, sensor box)
+- [ ] M16: External communication integrations
+- [ ] M17: Autonomous agency and action execution
+- [ ] M18: External sensory reintegration
 - [ ] M19: Subagent support
 - [ ] M20: Reactionary events
-  - Agent can autonomously react to external events without requiring a conversational turn
 - [ ] M21: Knowledge-base stewardship
 
 ## Deferred / Under Consideration
@@ -105,5 +93,5 @@
 - [x] Extraction failure isolation
 - [x] Separate primary/extraction model roles
 - [ ] Tool execution under provider failure (M8)
-- [ ] Full agent-loop test (M8)
+- [ ] Full agent-loop test (M9)
 - [ ] Long-running session test (TBD)
