@@ -2,6 +2,20 @@ import { Inject, Injectable } from '@nestjs/common';
 import { CORE_CONFIG } from '../config';
 import { buildRequestHeaders } from './llm-provider';
 import type { LlmChatRequest } from './llm-provider';
+import {
+  CompletionParser,
+  MAX_SSE_BUFFER_BYTES,
+  ToolOffer,
+  parseJson,
+  protocolError,
+} from './llm.protocol';
+import type { LlmResult, LlmToolRequest } from './llm.protocol';
+export type {
+  LlmMessage,
+  LlmResult,
+  LlmToolCall,
+  LlmToolRequest,
+} from './llm.protocol';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -54,20 +68,6 @@ export class LlmError extends Error {
   }
 }
 
-interface ChatCompletionsResponse {
-  model?: string;
-  choices?: Array<{
-    message?: { content?: string | null };
-  }>;
-}
-
-interface ChatCompletionsChunk {
-  model?: string;
-  choices?: Array<{
-    delta?: { content?: string | null };
-  }>;
-}
-
 @Injectable()
 export class LlmClient {
   constructor(
@@ -75,64 +75,16 @@ export class LlmClient {
   ) {}
 
   buildUrl(): string {
-    if (this.config.llmModel.includes('muse')) {
-      return `${this.config.llmBaseUrl}/responses`;
-    } else {
-      return `${this.config.llmBaseUrl}/chat/completions`;
-    }
+    const url = new URL(this.config.llmBaseUrl);
+    const path = url.pathname.replace(/\/+$/, '');
+    url.pathname = path.endsWith('/chat/completions')
+      ? path
+      : `${path}/chat/completions`;
+    return url.toString();
   }
 
   async chat(request: LlmChatRequest): Promise<ChatResult> {
-    const { messages } = request;
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      this.config.llmTimeoutMs,
-    );
-    try {
-      let res: Response;
-      try {
-        res = await fetch(this.buildUrl(), {
-          method: 'POST',
-          headers: buildRequestHeaders(this.config, {
-            sessionId: request.sessionId,
-          }),
-          body: JSON.stringify({
-            model: this.config.llmModel,
-            messages,
-            stream: false,
-          }),
-          signal: controller.signal,
-        });
-      } catch (err) {
-        throw this.providerError(
-          504,
-          `LLM endpoint unreachable or timed out after ${this.config.llmTimeoutMs}ms`,
-          true,
-          err,
-        );
-      }
-      if (!res.ok) {
-        const snippet = await this.readBodySnippet(res);
-        throw this.providerError(
-          502,
-          `LLM endpoint returned ${res.status}: ${snippet}`,
-          res.status >= 500,
-        );
-      }
-      const data = (await res.json()) as ChatCompletionsResponse;
-      const content = data.choices?.[0]?.message?.content?.trim();
-      if (!content) {
-        throw this.providerError(
-          502,
-          'LLM endpoint returned no content (empty choices)',
-          false,
-        );
-      }
-      return { content, model: data.model ?? this.config.llmModel };
-    } finally {
-      clearTimeout(timer);
-    }
+    return this.textResult(await this.complete(request));
   }
 
   /**
@@ -144,17 +96,53 @@ export class LlmClient {
     sink: StreamSink,
     clientSignal?: AbortSignal,
   ): Promise<ChatResult> {
-    const { messages } = request;
-    const timeout = new AbortController();
+    return this.textResult(await this.complete(request, sink, clientSignal));
+  }
+
+  async chatWithTools(
+    request: LlmToolRequest,
+    clientSignal?: AbortSignal,
+  ): Promise<LlmResult> {
+    return this.complete(
+      request,
+      undefined,
+      clientSignal,
+      new ToolOffer(request),
+    );
+  }
+
+  async chatStreamWithTools(
+    request: LlmToolRequest,
+    sink: StreamSink,
+    clientSignal?: AbortSignal,
+  ): Promise<LlmResult> {
+    return this.complete(request, sink, clientSignal, new ToolOffer(request));
+  }
+
+  private textResult(result: LlmResult): ChatResult {
+    if (result.kind !== 'text') throw protocolError();
+    return { content: result.content, model: result.model };
+  }
+
+  private async complete(
+    request: LlmChatRequest | LlmToolRequest,
+    sink?: StreamSink,
+    clientSignal?: AbortSignal,
+    offer?: ToolOffer,
+  ): Promise<LlmResult> {
+    const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      timeout.abort();
+      controller.abort();
     }, this.config.llmTimeoutMs);
-    const onClientAbort = (): void => timeout.abort();
+    const onClientAbort = (): void => controller.abort();
     clientSignal?.addEventListener('abort', onClientAbort, { once: true });
+    if (clientSignal?.aborted) controller.abort();
+    const signal = controller.signal;
+    let res: Response | undefined;
     try {
-      let res: Response;
+      signal.throwIfAborted();
       try {
         res = await fetch(this.buildUrl(), {
           method: 'POST',
@@ -163,38 +151,61 @@ export class LlmClient {
           }),
           body: JSON.stringify({
             model: this.config.llmModel,
-            messages,
-            stream: true,
+            messages: request.messages,
+            stream: sink !== undefined,
+            ...offer?.body,
           }),
-          signal: timeout.signal,
+          signal,
         });
-      } catch (err) {
-        throw this.abortError(err, timedOut);
+      } catch {
+        throw this.providerError(
+          504,
+          'LLM endpoint unreachable or request aborted',
+          true,
+        );
       }
+      signal.throwIfAborted();
       if (!res.ok) {
-        const snippet = await this.readBodySnippet(res);
         throw this.providerError(
           502,
-          `LLM endpoint returned ${res.status}: ${snippet}`,
+          'LLM endpoint returned an unsuccessful response',
           res.status >= 500,
         );
       }
-      try {
-        if (!res.body) {
-          throw this.providerError(
-            502,
-            'LLM endpoint returned an empty body',
-            true,
-          );
-        }
-        return await this.pumpStream(res.body, sink);
-      } catch (err) {
-        if (err instanceof LlmError) throw err;
-        throw this.abortError(err, timedOut);
+      if (!res.body) throw protocolError();
+      const parser = new CompletionParser(this.config.llmModel, offer);
+      if (sink) {
+        const result = await this.pumpStream(
+          res.body,
+          parser,
+          sink,
+          signal,
+          offer !== undefined,
+        );
+        signal.throwIfAborted();
+        return result;
       }
+      const text = await this.readResponse(res.body, signal);
+      signal.throwIfAborted();
+      return parser.response(parseJson(text));
+    } catch (err) {
+      if (signal.aborted) {
+        throw this.providerError(
+          504,
+          timedOut
+            ? `LLM endpoint timed out after ${this.config.llmTimeoutMs}ms`
+            : 'LLM request aborted',
+          timedOut,
+        );
+      }
+      if (err instanceof LlmError) throw err;
+      throw protocolError();
     } finally {
       clearTimeout(timer);
       clientSignal?.removeEventListener('abort', onClientAbort);
+      if (res?.body && !res.body.locked)
+        await res.body.cancel().catch(() => undefined);
+      controller.abort();
     }
   }
 
@@ -213,81 +224,99 @@ export class LlmClient {
     );
   }
 
-  private abortError(cause: unknown, timedOut: boolean): LlmError {
-    if (timedOut) {
-      return this.providerError(
-        504,
-        `LLM endpoint timed out after ${this.config.llmTimeoutMs}ms`,
-        true,
-        cause,
-      );
+  private async readResponse(
+    body: ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    const cancel = (): void => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    try {
+      let text = '';
+      for (;;) {
+        signal.throwIfAborted();
+        const { done, value } = await reader.read();
+        signal.throwIfAborted();
+        if (done) return text + decoder.decode();
+        text += decoder.decode(value, { stream: true });
+      }
+    } finally {
+      signal.removeEventListener('abort', cancel);
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
-    return this.providerError(504, 'LLM request aborted', false, cause);
   }
 
   private async pumpStream(
     body: ReadableStream<Uint8Array>,
+    parser: CompletionParser,
     sink: StreamSink,
-  ): Promise<ChatResult> {
+    signal: AbortSignal,
+    strict: boolean,
+  ): Promise<LlmResult> {
     const reader = body.getReader();
-    const decoder = new TextDecoder();
-    const state = { content: '', model: this.config.llmModel };
+    const decoder = new TextDecoder('utf-8', { fatal: strict });
+    const cancel = (): void => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    let buffer = '';
+    let bufferBytes = 0;
+    const line = (raw: string): boolean => {
+      signal.throwIfAborted();
+      const trimmed = raw.trim();
+      if (!trimmed.startsWith('data:')) return false;
+      const payload = trimmed.slice(5).trim();
+      if (payload === '[DONE]') {
+        parser.markDone();
+        return true;
+      }
+      let value: unknown;
+      try {
+        value = parseJson(payload);
+      } catch (err) {
+        if (strict) throw err;
+        return false;
+      }
+      parser.chunk(value, sink);
+      signal.throwIfAborted();
+      return false;
+    };
     try {
-      let buffer = '';
       for (;;) {
+        signal.throwIfAborted();
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          this.applyPayloadLine(line, state, sink);
+        signal.throwIfAborted();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer) line(buffer);
+          return parser.result(true);
+        }
+        for (let offset = 0; offset < value.length; offset += 4096) {
+          const decoded = decoder.decode(
+            value.subarray(offset, offset + 4096),
+            { stream: true },
+          );
+          for (const character of decoded) {
+            if (character === '\n') {
+              if (line(buffer)) return parser.result(true);
+              buffer = '';
+              bufferBytes = 0;
+            } else {
+              bufferBytes += Buffer.byteLength(character);
+              if (bufferBytes > MAX_SSE_BUFFER_BYTES) throw protocolError();
+              buffer += character;
+            }
+          }
         }
       }
-      const tail = (buffer + decoder.decode()).trim();
-      if (tail) this.applyPayloadLine(tail, state, sink);
     } finally {
+      signal.removeEventListener('abort', cancel);
+      await reader.cancel().catch(() => undefined);
       reader.releaseLock();
-    }
-    if (!state.content) {
-      throw this.providerError(
-        502,
-        'LLM endpoint returned an empty stream',
-        false,
-      );
-    }
-    return { content: state.content, model: state.model };
-  }
-
-  private applyPayloadLine(
-    line: string,
-    state: { content: string; model: string },
-    sink: StreamSink,
-  ): void {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('data:')) return;
-    const payload = trimmed.slice('data:'.length).trim();
-    if (!payload || payload === '[DONE]') return;
-    let chunk: ChatCompletionsChunk;
-    try {
-      chunk = JSON.parse(payload) as ChatCompletionsChunk;
-    } catch {
-      return;
-    }
-    if (chunk.model) state.model = chunk.model;
-    const delta = chunk.choices?.[0]?.delta?.content;
-    if (delta) {
-      state.content += delta;
-      sink.onToken(delta);
-    }
-  }
-
-  private async readBodySnippet(res: Response): Promise<string> {
-    try {
-      const text = await res.text();
-      return text.slice(0, 300) || '<empty body>';
-    } catch {
-      return '<unreadable body>';
     }
   }
 }
