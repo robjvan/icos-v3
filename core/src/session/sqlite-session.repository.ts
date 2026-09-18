@@ -328,7 +328,6 @@ function asPhrase(query: string): string {
  * so anything else (IO, corruption, busy) must propagate as a 500.
  */
 function isQueryError(err: unknown): boolean {
-  return (
-    err instanceof Error && (err as { code?: unknown }).code === 'SQLITE_ERROR'
-  );
+  if (typeof err !== 'object' || err === null) return false;
+  return (err as { code?: unknown }).code === 'SQLITE_ERROR';
 }
