@@ -76,7 +76,7 @@ M8 should address these without unnecessarily redesigning unrelated subsystems.
 
 ## Milestone Slices
 
-### M8a — Tool Contract
+### [x] M8a — Tool Contract
 
 Establish the canonical internal representation of a tool.
 
@@ -132,9 +132,35 @@ Verification from `core/`:
 
 No e2e or live execution verification has been performed for M8. This progress note is not milestone-completion evidence; M8a and M8 remain incomplete.
 
+#### Working progress — M8b (September 17, 2026)
+
+M8a committed as `61f0ae6`; M8b committed as `405e5d8` (`core/src/llm/llm.protocol.ts`, `core/src/llm/llm.protocol.spec.ts`, updated `core/src/llm/llm.client.ts`). Additive tool-aware APIs (`chatWithTools`/`chatStreamWithTools`) return a discriminated `LlmResult`; legacy `chat`/`chatStream` remain text-only and reject unexpected tool calls. Offered tools map to explicit wire aliases resolved through a request-local table; parsed calls carry canonical name/version, raw argument string, and parsed arguments for later registry validation. Streamed arguments assemble under bounded limits; tool results require complete assembly plus a `tool_calls` finish reason and terminal `[DONE]`; `tool_choice: 'none'` rejects any returned call. URL building now normalizes to exactly one `/chat/completions` suffix (this also fixed the pre-existing doubled-suffix LLM test). No execution, persistence, or conversation wiring exists; parsed calls are data only, and multi-call results must be rejected before any execution in M8c.
+
+Verification from `core/`:
+
+- `npm test -- --runInBand --testPathPatterns='llm|tools'`: 151 passed.
+- `npm test -- --runInBand`: 380 passed, 6 failed — all pre-existing skill-seed path failures unchanged by M8b (`docs/skills` seeds resolve outside the repository root).
+- `npm run test:e2e -- --runInBand`: 30 passed.
+- `npm run build`, `tsc --noEmit`, and non-mutating eslint: passed.
+
+Remaining for M8: M8c bounded execution, M8d approval/invocation ledger, M8e live verification. The 6 seed-path failures require resolution before M8 integration claims a clean baseline.
+
+#### Working progress — M8c (September 17, 2026)
+
+M8c is implemented but uncommitted: `core/src/tools/tool-execution.repository.ts` (SQLite ledger over `tool_requests`), `core/src/tools/tool-execution.service.ts` (bounded `consume`), `core/src/tools/tool-execution.service.spec.ts` (49 tests over real temporary SQLite databases), plus the `tool_requests` table and immutability trigger in `core/src/session/database.ts`. The service consumes an already-completed model result plus trusted session/request/context/allowed-tools: at most one tool call per request, registry validation (unknown → version → permission → session → args, then raw-argument consistency), search-only execution under an atomic claim token, rename held at `awaiting_approval` with no mutation and no generic-approval bridge, and a separately claimed tools-disabled final LLM call. A waiter timeout returns the `executing` record without persisting failure; the sole owner persists the actual eventual outcome in the background. Interrupted claims stay `executing` until an explicit token-bearing release resolves them to a durable `unknown` outcome — never auto-retried. No conversation, HTTP, or module wiring exists yet; approval grant/resume is M8d work.
+
+Verification from `core/`:
+
+- `npm test -- --runInBand tools`: 74 passed.
+- `npm test -- --runInBand`: 435 passed, 0 failed.
+- `npm run test:e2e -- --runInBand`: 30 passed.
+- `npm run build`, `tsc --noEmit`, non-mutating eslint, `git diff --check`: passed.
+
+Two incidental fixes were required along the way: the skill-seed spec paths (one directory too deep after the `core/` move) and a realm-fragile `instanceof Error` check in `isQueryError` that broke FTS fallback when the full suite ran in one Jest process. No e2e tool-execution or live verification has been performed; M8c, M8d, M8e, and M8 remain incomplete.
+
 ---
 
-### M8b — Model Protocol
+### [x] M8b — Model Protocol
 
 Extend the LLM boundary sufficiently to represent structured tool calls.
 
@@ -164,7 +190,7 @@ The model should only be offered tools that are actually available and permitted
 
 ---
 
-### M8c — Bounded Execution
+### [ ] M8c — Bounded Execution
 
 Implement a bounded, deterministic execution pipeline for a single invocation.
 
@@ -216,7 +242,7 @@ A second approval for the same invocation must not cause a second execution.
 
 ---
 
-### M8d — Approval and Persistence
+### [ ] M8d — Approval and Persistence
 
 Implement a small SQLite-backed invocation ledger.
 
@@ -288,7 +314,7 @@ This is particularly important for future external integrations.
 
 ---
 
-### M8e — Verification
+### [ ] M8e — Verification
 
 Verification should test the execution mechanism and its invariants, not just the happy path.
 

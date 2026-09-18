@@ -126,6 +126,40 @@ CREATE TABLE IF NOT EXISTS clarification_events (
 
 CREATE INDEX IF NOT EXISTS idx_clarification_events_clarification
 ON clarification_events(clarification_id);
+
+CREATE TABLE IF NOT EXISTS tool_requests (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+    invocation_id TEXT UNIQUE,
+    state TEXT NOT NULL CHECK (state IN (
+        'closed', 'invalid', 'validated', 'awaiting_approval',
+        'executing', 'succeeded', 'failed'
+    )),
+    validation_json TEXT NOT NULL CHECK (json_valid(validation_json)),
+    execution_token TEXT,
+    ownership TEXT NOT NULL DEFAULT 'unconfirmed' CHECK (ownership IN ('unconfirmed', 'released')),
+    execution_json TEXT CHECK (execution_json IS NULL OR (
+        json_valid(execution_json) AND length(CAST(execution_json AS BLOB)) <= 65536
+    )),
+    final_state TEXT NOT NULL CHECK (final_state IN (
+        'not_required', 'pending', 'claimed', 'succeeded', 'failed'
+    )),
+    final_token TEXT,
+    final_json TEXT NOT NULL CHECK (json_valid(final_json)),
+    CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
+    CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
+    CHECK (state != 'executing' OR execution_token IS NOT NULL),
+    CHECK (ownership = 'unconfirmed' OR state = 'executing'),
+    CHECK (final_state NOT IN ('pending', 'claimed', 'succeeded', 'failed') OR execution_json IS NOT NULL),
+    CHECK (final_state != 'claimed' OR final_token IS NOT NULL)
+);
+
+CREATE TRIGGER IF NOT EXISTS tool_requests_identity_immutable
+BEFORE UPDATE OF request_id, session_id, input_json, invocation_id ON tool_requests
+BEGIN
+    SELECT RAISE(ABORT, 'immutable tool request');
+END;
 `;
 
 /**
@@ -183,8 +217,14 @@ const SCHEMAS: Record<
       'approval_events',
       'clarifications',
       'clarification_events',
+      'tool_requests',
     ],
-    triggers: ['messages_ai', 'messages_ad', 'messages_au'],
+    triggers: [
+      'messages_ai',
+      'messages_ad',
+      'messages_au',
+      'tool_requests_identity_immutable',
+    ],
   },
   memories: {
     sql: MEMORIES_SCHEMA_SQL,
