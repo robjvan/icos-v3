@@ -50,11 +50,23 @@ export type FinalOutcome =
       failure: { code: 'llm_failed' | 'invalid_final' | 'final_too_large' };
     };
 
+export type MirrorOutcomeState = 'rejected' | 'cancelled' | 'expired';
+
+export interface RenameResult {
+  sessionId: string;
+  title: string;
+}
+
+export type RenameOutcome =
+  | { ok: true; renamed: RenameResult }
+  | { ok: false; failure: { code: 'rename_failed' } };
+
 export interface ToolExecutionRecord {
   requestId: string;
   sessionId: string;
   input: ToolExecutionInput;
   invocationId: string | null;
+  approvalId: string | null;
   state:
     | 'closed'
     | 'invalid'
@@ -62,9 +74,10 @@ export interface ToolExecutionRecord {
     | 'awaiting_approval'
     | 'executing'
     | 'succeeded'
-    | 'failed';
+    | 'failed'
+    | MirrorOutcomeState;
   validation: ValidationOutcome;
-  execution: ExecutionOutcome | null;
+  execution: ExecutionOutcome | RenameOutcome | null;
   final: FinalOutcome;
   executionToken: string | null;
   ownership: 'unconfirmed' | 'released' | 'none';
@@ -75,12 +88,17 @@ interface Row {
   session_id: string;
   input_json: string;
   invocation_id: string | null;
+  approval_id: string | null;
   state: ToolExecutionRecord['state'];
   validation_json: string;
   execution_json: string | null;
   final_json: string;
   execution_token: string | null;
   ownership: 'unconfirmed' | 'released';
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
 class LedgerError extends Error {}
@@ -108,12 +126,14 @@ export class ToolExecutionRepository {
         sessionId: row.session_id,
         input: JSON.parse(row.input_json) as ToolExecutionInput,
         invocationId: row.invocation_id,
+        approvalId: row.approval_id,
         state: row.state,
         validation: JSON.parse(row.validation_json) as ValidationOutcome,
         execution:
           row.execution_json === null
             ? null
-            : (JSON.parse(row.execution_json) as ExecutionOutcome),
+            : (JSON.parse(row.execution_json) as
+                ExecutionOutcome | RenameOutcome),
         final: JSON.parse(row.final_json) as FinalOutcome,
         executionToken: row.execution_token,
         ownership: row.state === 'executing' ? row.ownership : 'none',
@@ -152,21 +172,53 @@ export class ToolExecutionRepository {
             state === 'closed' && input.proposal.kind === 'text'
               ? { state: 'not_required', result: input.proposal }
               : { state: 'not_required' };
+          const invocationId =
+            input.proposal?.kind === 'tool_calls' &&
+            Array.isArray(input.proposal.toolCalls) &&
+            input.proposal.toolCalls.length === 1
+              ? randomUUID()
+              : null;
+          let approvalId: string | null = null;
+          if (
+            state === 'awaiting_approval' &&
+            request?.name === 'session.rename'
+          ) {
+            approvalId = randomUUID();
+            const now = nowIso();
+            this.database.connection
+              .prepare(
+                `INSERT INTO approvals
+                  (id, session_id, action, description, status,
+                   created_at, updated_at, expires_at)
+                 VALUES (?, ?, 'session.rename', ?, 'pending', ?, ?, NULL)`,
+              )
+              .run(
+                approvalId,
+                input.sessionId,
+                `Rename session to "${request.args.title}"`,
+                now,
+                now,
+              );
+            this.database.connection
+              .prepare(
+                `INSERT INTO approval_events
+                   (approval_id, session_id, event, created_at)
+                 VALUES (?, ?, 'created', ?)`,
+              )
+              .run(approvalId, input.sessionId, now);
+          }
           this.database.connection
             .prepare(
               `INSERT INTO tool_requests
-        (request_id, session_id, input_json, invocation_id, state, validation_json, execution_token, ownership, final_state, final_json)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 'unconfirmed', ?, ?)`,
+        (request_id, session_id, input_json, invocation_id, approval_id, state, validation_json, execution_token, ownership, final_state, final_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'unconfirmed', ?, ?)`,
             )
             .run(
               input.requestId,
               input.sessionId,
               snapshot,
-              input.proposal?.kind === 'tool_calls' &&
-                Array.isArray(input.proposal.toolCalls) &&
-                input.proposal.toolCalls.length === 1
-                ? randomUUID()
-                : null,
+              invocationId,
+              approvalId,
               state,
               JSON.stringify(validation),
               final.state,
@@ -251,6 +303,114 @@ export class ToolExecutionRepository {
               token,
             );
           if (result.changes !== 1) throw new LedgerError('claim_lost');
+        })
+        .immediate(),
+    );
+  }
+
+  /**
+   * Claim an awaiting-approval rename for execution. Revalidates inside
+   * the claim transaction: a policy change since parking invalidates
+   * the invocation instead of executing it. Approval status itself is
+   * observed by the caller (terminal states are monotonic, so an
+   * observed `approved` cannot regress before this claim lands).
+   */
+  claimRename(
+    requestId: string,
+    revalidate: (input: ToolExecutionInput) => ValidationOutcome,
+  ): string | null {
+    return this.access(() =>
+      this.database.connection
+        .transaction(() => {
+          const record = this.required(requestId);
+          if (record.state !== 'awaiting_approval' || !record.approvalId)
+            return null;
+          this.requireSession(record.sessionId);
+          const validation = revalidate(record.input);
+          if (
+            !validation.ok ||
+            !('request' in validation) ||
+            validation.request.name !== 'session.rename' ||
+            !isDeepStrictEqual(validation, record.validation)
+          ) {
+            const failure: ValidationOutcome = validation.ok
+              ? { ok: false, failure: { code: 'unpermitted_tool' } }
+              : validation;
+            this.database.connection
+              .prepare(
+                "UPDATE tool_requests SET state = 'invalid', validation_json = ? WHERE request_id = ? AND state = 'awaiting_approval'",
+              )
+              .run(JSON.stringify(failure), requestId);
+            return null;
+          }
+          const token = randomUUID();
+          const result = this.database.connection
+            .prepare(
+              "UPDATE tool_requests SET state = 'executing', execution_token = ? WHERE request_id = ? AND state = 'awaiting_approval' AND execution_token IS NULL",
+            )
+            .run(token, requestId);
+          return result.changes === 1 ? token : null;
+        })
+        .immediate(),
+    );
+  }
+
+  /**
+   * Perform the rename mutation and persist its outcome atomically.
+   * The session UPDATE and the ledger write share one transaction, so
+   * a committed `succeeded` row means the title changed and a
+   * committed `failed` row means it did not — no `unknown` gap for
+   * the local rename. Throws (rolling back) when the session row is
+   * missing, leaving the claim held for explicit recovery.
+   */
+  finishRename(requestId: string, token: string, rename: RenameResult): void {
+    this.access(() =>
+      this.database.connection
+        .transaction(() => {
+          const now = nowIso();
+          const mutated = this.database.connection
+            .prepare(
+              'UPDATE sessions SET updated_at = ?, title = ? WHERE id = ?',
+            )
+            .run(now, rename.title, rename.sessionId);
+          if (mutated.changes !== 1) throw new LedgerError('rename_failed');
+          const outcome: RenameOutcome = { ok: true, renamed: rename };
+          const result = this.database.connection
+            .prepare(
+              `UPDATE tool_requests
+        SET state = 'succeeded', execution_json = ?, final_state = 'pending', final_json = ?
+        WHERE request_id = ? AND state = 'executing' AND execution_token = ?`,
+            )
+            .run(
+              JSON.stringify(outcome),
+              JSON.stringify({ state: 'pending' }),
+              requestId,
+              token,
+            );
+          if (result.changes !== 1) throw new LedgerError('claim_lost');
+        })
+        .immediate(),
+    );
+  }
+
+  /**
+   * Mirror a terminal non-approved approval outcome onto an
+   * awaiting-approval invocation. Rejection, cancellation, and expiry
+   * close the invocation without execution; the model is not
+   * re-prompted (final stays `not_required`).
+   */
+  mirrorOutcome(requestId: string, to: MirrorOutcomeState): boolean {
+    return this.access(() =>
+      this.database.connection
+        .transaction(() => {
+          const result = this.database.connection
+            .prepare(
+              `UPDATE tool_requests SET state = ?
+               WHERE request_id = ? AND state = 'awaiting_approval'`,
+            )
+            .run(to, requestId);
+          if (result.changes === 1) return true;
+          return this.required(requestId).state === to;
         })
         .immediate(),
     );

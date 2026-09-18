@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import type { ApprovalRepository } from '../approvals/approval.repository';
 import type { SessionStore } from '../conversation/session.store';
 import type { LlmClient } from '../llm/llm.client';
 import { ToolOffer } from '../llm/llm.protocol';
@@ -8,6 +9,7 @@ import { ToolExecutionRepository } from './tool-execution.repository';
 import type {
   ExecutionOutcome,
   FinalOutcome,
+  MirrorOutcomeState,
   ToolExecutionInput,
   ToolExecutionRecord,
   ValidationOutcome,
@@ -26,6 +28,7 @@ export class ToolExecutionService {
     private readonly sessions: Pick<SessionStore, 'searchMessages'>,
     private readonly registry: ToolRegistry,
     private readonly llm: Pick<LlmClient, 'chatWithTools'>,
+    private readonly approvals: Pick<ApprovalRepository, 'getApproval'>,
     options: { searchTimeoutMs?: number } = {},
   ) {
     this.searchTimeoutMs = options.searchTimeoutMs ?? 2000;
@@ -103,18 +106,73 @@ export class ToolExecutionService {
       }
       record = this.required(record.requestId);
     }
+    if (record.state === 'awaiting_approval') {
+      return this.resume(record.requestId, record.sessionId);
+    }
+    return this.maybeFinal(record.requestId);
+  }
+
+  /**
+   * Resume an invocation parked at `awaiting_approval`. The caller must
+   * present the owning session: a forked session id is denied, so a
+   * fork never inherits executable pending approvals. Generic
+   * approvals and approvals bound to other invocations confer zero
+   * authority — only the stored `approvalId` in `approved` state
+   * executes, exactly once.
+   */
+  async resume(
+    requestId: string,
+    sessionId: string,
+  ): Promise<ToolExecutionRecord> {
+    const record = this.required(requestId);
+    if (record.sessionId !== sessionId) throw new Error('invalid_session');
+    if (record.state === 'awaiting_approval' && record.approvalId) {
+      const approval = await this.approvals.getApproval(record.approvalId);
+      if (
+        approval &&
+        approval.sessionId === record.sessionId &&
+        approval.id === record.approvalId
+      ) {
+        if (approval.status === 'approved') {
+          const token = this.ledger.claimRename(requestId, (saved) =>
+            this.validate(saved),
+          );
+          if (token) {
+            const claimed = this.required(requestId);
+            if (
+              !claimed.validation.ok ||
+              !('request' in claimed.validation) ||
+              claimed.validation.request.name !== 'session.rename'
+            )
+              throw new Error('invalid_execution_state');
+            this.ledger.finishRename(requestId, token, {
+              sessionId: claimed.sessionId,
+              title: claimed.validation.request.args.title,
+            });
+          }
+        } else if (approval.status !== 'pending') {
+          const outcome: MirrorOutcomeState = approval.status;
+          this.ledger.mirrorOutcome(requestId, outcome);
+        }
+      }
+    }
+    return this.maybeFinal(requestId);
+  }
+
+  private async maybeFinal(requestId: string): Promise<ToolExecutionRecord> {
+    const record = this.required(requestId);
     if (
       (record.state === 'succeeded' || record.state === 'failed') &&
       record.final.state === 'pending'
     ) {
-      const token = this.ledger.claimFinal(record.requestId);
+      const token = this.ledger.claimFinal(requestId);
       if (token) {
-        const durable = this.required(record.requestId);
+        const durable = this.required(requestId);
         const outcome = await this.respond(durable);
-        this.ledger.finishFinal(record.requestId, token, outcome);
+        this.ledger.finishFinal(requestId, token, outcome);
       }
     }
-    return this.required(record.requestId);
+    return this.required(requestId);
   }
 
   private validate(input: ToolExecutionInput): ValidationOutcome {

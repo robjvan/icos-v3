@@ -158,6 +158,19 @@ Verification from `core/`:
 
 Two incidental fixes were required along the way: the skill-seed spec paths (one directory too deep after the `core/` move) and a realm-fragile `instanceof Error` check in `isQueryError` that broke FTS fallback when the full suite ran in one Jest process. No e2e tool-execution or live verification has been performed; M8c, M8d, M8e, and M8 remain incomplete.
 
+#### Working progress — M8d (September 18, 2026)
+
+M8d is implemented but uncommitted. Parking a rename now atomically creates a bound `session.rename` approval (`tool_requests.approval_id → approvals.id`, one-to-one, immutable, delete-restricted) in the same transaction, so every `awaiting_approval` row has a owning approval and generic approvals confer zero authority. `resume(requestId, sessionId)` enforces the owning session (forks denied), revalidates stored policy inside the claim, observes the bound approval through the lazy-expiry-applying read, mirrors `rejected`/`cancelled`/`expired` to terminal invocation states with zero execution, and on `approved` claims exactly once then performs the session rename and its ledger write in a single transaction. Consume auto-resumes parked invocations on same-input calls; all terminal paths share one finalization step. Schema adds `approval_id` plus the mirrored states, with a preserving rebuild migration for M8c-era tables (approval-less parks are un-actionable and dropped) and convergence of the immutability trigger onto all identity columns.
+
+Verification from `core/`:
+
+- `npm test -- --runInBand tools`: 86 passed (includes grant/deny/cancel/expire/fork/restart/race/rebind/revalidation/final-failure/unknown paths).
+- `npm test -- --runInBand`: 448 passed, 0 failed.
+- `npm run test:e2e -- --runInBand`: 30 passed.
+- `npm run build`, `tsc --noEmit`, non-mutating eslint, `git diff --check`: passed.
+
+Remaining for M8: conversation/HTTP wiring of the tool turn (proposal → approval → resume → response), M8e live verification across providers, and milestone evidence. M8d, M8e, and M8 remain incomplete.
+
 ---
 
 ### [x] M8b — Model Protocol

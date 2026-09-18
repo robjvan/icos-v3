@@ -132,9 +132,11 @@ CREATE TABLE IF NOT EXISTS tool_requests (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
     input_json TEXT NOT NULL CHECK (json_valid(input_json)),
     invocation_id TEXT UNIQUE,
+    approval_id TEXT UNIQUE REFERENCES approvals(id) ON DELETE RESTRICT,
     state TEXT NOT NULL CHECK (state IN (
         'closed', 'invalid', 'validated', 'awaiting_approval',
-        'executing', 'succeeded', 'failed'
+        'executing', 'succeeded', 'failed',
+        'rejected', 'cancelled', 'expired'
     )),
     validation_json TEXT NOT NULL CHECK (json_valid(validation_json)),
     execution_token TEXT,
@@ -148,6 +150,7 @@ CREATE TABLE IF NOT EXISTS tool_requests (
     final_token TEXT,
     final_json TEXT NOT NULL CHECK (json_valid(final_json)),
     CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
+    CHECK (state != 'awaiting_approval' OR approval_id IS NOT NULL),
     CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
     CHECK (state != 'executing' OR execution_token IS NOT NULL),
     CHECK (ownership = 'unconfirmed' OR state = 'executing'),
@@ -161,6 +164,59 @@ BEGIN
     SELECT RAISE(ABORT, 'immutable tool request');
 END;
 `;
+
+/**
+ * Post-M8d `tool_requests` definition, used to rebuild pre-M8d tables
+ * whose CHECK constraints cannot be altered in place. The base schema
+ * above stays `IF NOT EXISTS`-safe for old files; `migrateToolRequests`
+ * swaps in this definition while preserving rows.
+ */
+const TOOL_REQUESTS_TABLE_SQL = `
+CREATE TABLE tool_requests (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+    invocation_id TEXT UNIQUE,
+    approval_id TEXT UNIQUE REFERENCES approvals(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK (state IN (
+        'closed', 'invalid', 'validated', 'awaiting_approval',
+        'executing', 'succeeded', 'failed',
+        'rejected', 'cancelled', 'expired'
+    )),
+    validation_json TEXT NOT NULL CHECK (json_valid(validation_json)),
+    execution_token TEXT,
+    ownership TEXT NOT NULL DEFAULT 'unconfirmed' CHECK (ownership IN ('unconfirmed', 'released')),
+    execution_json TEXT CHECK (execution_json IS NULL OR (
+        json_valid(execution_json) AND length(CAST(execution_json AS BLOB)) <= 65536
+    )),
+    final_state TEXT NOT NULL CHECK (final_state IN (
+        'not_required', 'pending', 'claimed', 'succeeded', 'failed'
+    )),
+    final_token TEXT,
+    final_json TEXT NOT NULL CHECK (json_valid(final_json)),
+    CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
+    CHECK (state != 'awaiting_approval' OR approval_id IS NOT NULL),
+    CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
+    CHECK (state != 'executing' OR execution_token IS NOT NULL),
+    CHECK (ownership = 'unconfirmed' OR state = 'executing'),
+    CHECK (final_state NOT IN ('pending', 'claimed', 'succeeded', 'failed') OR execution_json IS NOT NULL),
+    CHECK (final_state != 'claimed' OR final_token IS NOT NULL)
+);
+`;
+
+/** Full-column immutability guard converged on by `migrateToolRequests`. */
+const TOOL_REQUESTS_IMMUTABLE_TRIGGER_SQL = `
+CREATE TRIGGER tool_requests_identity_immutable
+BEFORE UPDATE OF request_id, session_id, input_json, invocation_id, approval_id ON tool_requests
+BEGIN
+    SELECT RAISE(ABORT, 'immutable tool request');
+END;
+`;
+
+const TOOL_REQUESTS_COLUMNS =
+  'request_id, session_id, input_json, invocation_id, state, ' +
+  'validation_json, execution_token, ownership, execution_json, ' +
+  'final_state, final_token, final_json';
 
 /**
  * Memory candidate evidence ledger schema. Observations about what might
@@ -272,7 +328,62 @@ function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
       'excluded_from_context',
       'INTEGER NOT NULL DEFAULT 0',
     );
+    migrateToolRequests(db);
   }
+}
+
+/**
+ * M8d upgrade for the M8c-era `tool_requests` table: pre-M8d tables
+ * lack `approval_id` and the mirrored terminal states (`rejected`,
+ * `cancelled`, `expired`), and CHECK constraints cannot be altered in
+ * place. Rebuilds the table preserving every row, then converges the
+ * immutability trigger on the full column list. Fresh databases take
+ * the same path for the trigger. Idempotent: current tables are left
+ * alone.
+ */
+function migrateToolRequests(db: Database.Database): void {
+  const table = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tool_requests'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (!table) return;
+  const columns = db.prepare(`PRAGMA table_info(tool_requests)`).all() as {
+    name: string;
+  }[];
+  const names = new Set(columns.map((column) => column.name));
+  if (names.has('approval_id') && table.sql.includes(`'rejected'`)) {
+    ensureToolRequestsTrigger(db);
+    return;
+  }
+  db.transaction(() => {
+    db.exec(`ALTER TABLE tool_requests RENAME TO tool_requests_legacy;`);
+    if (!names.has('approval_id')) {
+      // Pre-M8d parks never created an approval, so nothing can ever
+      // authorize them; drop rather than carry un-actionable rows.
+      db.exec(
+        `DELETE FROM tool_requests_legacy WHERE state = 'awaiting_approval';`,
+      );
+    }
+    db.exec(TOOL_REQUESTS_TABLE_SQL);
+    db.exec(
+      `INSERT INTO tool_requests (${TOOL_REQUESTS_COLUMNS})
+       SELECT ${TOOL_REQUESTS_COLUMNS} FROM tool_requests_legacy;`,
+    );
+    db.exec(`DROP TABLE tool_requests_legacy;`);
+  }).immediate();
+  ensureToolRequestsTrigger(db);
+}
+
+function ensureToolRequestsTrigger(db: Database.Database): void {
+  const trigger = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tool_requests_identity_immutable'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (trigger && trigger.sql.includes('approval_id')) return;
+  db.exec(`DROP TRIGGER IF EXISTS tool_requests_identity_immutable;`);
+  db.exec(TOOL_REQUESTS_IMMUTABLE_TRIGGER_SQL);
 }
 
 function addColumnIfMissing(
