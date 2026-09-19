@@ -51,6 +51,14 @@
   - [x] M7c: Three scopes — session-pinned, one-shot, turn-contextual — delimited injection, observability
   - [x] Evidence: `milestone-7a/7b/7c-evidence-skills.md`; live Isabel discovers `icos-v3-stack`
 
+- [x] M8: Tool integration — reliable, durable, approval-aware execution
+  - [x] M8a: Tool contract — frozen `session.search`/`session.rename` registry, strict validation, zero execution surface
+  - [x] M8b: Model protocol — additive `chatWithTools`/`chatStreamWithTools`, request-local aliases, bounded streamed argument assembly
+  - [x] M8c: Bounded execution — one call per request, SQLite invocation ledger, truthful timeout/unknown handling
+  - [x] M8d: Approval and persistence — invocation-bound approvals, exactly-once rename, reject/cancel/expire mirroring, fork denial
+  - [x] Wiring: tool turns in the conversation loop (JSON + SSE), `resume` endpoints, ledger-based context pairing, one-shot transcript claims
+  - [x] Evidence: `milestone-8-evidence-live.md` (live Ollama `gemma4-e4b-unc` run: search → park → approve → resume → restart); 460 unit + 37 e2e green
+
 ## Designed
 
 -
@@ -59,7 +67,6 @@
 
 > _See `full-roadmap-extended.md` for full details._
 
-- [ ] M8: Tool integration
 - [ ] M9: Agent Orchestration
 - [ ] M10: Build the epistemic memory
 - [ ] M11: Memory retrieval / application
