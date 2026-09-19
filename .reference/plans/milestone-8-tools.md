@@ -171,6 +171,19 @@ Verification from `core/`:
 
 Remaining for M8: conversation/HTTP wiring of the tool turn (proposal → approval → resume → response), M8e live verification across providers, and milestone evidence. M8d, M8e, and M8 remain incomplete.
 
+#### Working progress — Wiring + M8e (September 18, 2026)
+
+Conversation/HTTP wiring is implemented but uncommitted. `ConversationService` now runs every turn through `chatWithTools`: text proposals persist as before, single tool calls execute through the M8c/d substrate, rename parks return 202 `approval_required` with a bound approval payload, and `POST /core/conversation/resume` (+ `resume-stream`) resumes by request id without re-executing. SSE gains `tool`/`approval` events and `requestId`/`status` on `meta`/`done`. Context reconstruction appends ledger-derived call/result pairs (stable durable ids) after history instead of persisting fabricated tool messages. Transcript writes go through a one-shot `transcript_state` claim, so retried resumes never duplicate rows; gaps on crash match the existing store-nothing-on-failure philosophy. Failed finals return 200 with the durable execution `result` attached, so recovery delivers the persisted outcome instead of 502ing again. Invalid/multi-call proposals fail closed with 502 before any execution. `/undo` hides turn text but never erases the ledger; forks cannot resume foreign requests (`invalid_session` → 400).
+
+Verification from `core/`:
+
+- `npm test -- --runInBand`: 460 passed, 0 failed (includes tool-turn, resume, pairing, claim, and recovery unit tests).
+- `npm run test:e2e -- --runInBand`: 37 passed (includes scoped search execution, park → approve → resume, rejection mirroring, final-failure delivery, resume validation/fork denial, SSE tool/approval events, undo isolation).
+- `npm run build`, `tsc --noEmit` (both configs), non-mutating eslint, `git diff --check`: passed.
+- Live run against Ollama `gemma4-e4b-unc:latest` (only local model with tool support; `violet:latest` rejects tools): full text → search → park → approve → resume → duplicate-resume → restart-resume path with a real model, ledger-verified singularity. Evidence: `.reference/plans/evidence/milestone-8-evidence-live.md`.
+
+Remaining for M8: commit code + evidence, mark status. No M9 work undertaken.
+
 ---
 
 ### [x] M8b — Model Protocol
@@ -203,7 +216,7 @@ The model should only be offered tools that are actually available and permitted
 
 ---
 
-### [ ] M8c — Bounded Execution
+### [x] M8c — Bounded Execution
 
 Implement a bounded, deterministic execution pipeline for a single invocation.
 
@@ -255,7 +268,7 @@ A second approval for the same invocation must not cause a second execution.
 
 ---
 
-### [ ] M8d — Approval and Persistence
+### [x] M8d — Approval and Persistence
 
 Implement a small SQLite-backed invocation ledger.
 
@@ -327,7 +340,7 @@ This is particularly important for future external integrations.
 
 ---
 
-### [ ] M8e — Verification
+### [x] M8e — Verification
 
 Verification should test the execution mechanism and its invariants, not just the happy path.
 

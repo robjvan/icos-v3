@@ -1,3 +1,5 @@
+import { Injectable } from '@nestjs/common';
+
 export type ToolName = 'session.search' | 'session.rename';
 
 export type ApprovalPolicy = 'none' | 'required';
@@ -229,6 +231,7 @@ function fail(
   return { ok: false, failure: { code, message } };
 }
 
+@Injectable()
 export class ToolRegistry {
   list(): readonly ToolDescriptor[] {
     return DESCRIPTORS;

@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS tool_requests (
     )),
     final_token TEXT,
     final_json TEXT NOT NULL CHECK (json_valid(final_json)),
+    transcript_state TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written')),
     CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
     CHECK (state != 'awaiting_approval' OR approval_id IS NOT NULL),
     CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
@@ -194,6 +195,7 @@ CREATE TABLE tool_requests (
     )),
     final_token TEXT,
     final_json TEXT NOT NULL CHECK (json_valid(final_json)),
+    transcript_state TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written')),
     CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
     CHECK (state != 'awaiting_approval' OR approval_id IS NOT NULL),
     CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
@@ -329,6 +331,12 @@ function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
       'INTEGER NOT NULL DEFAULT 0',
     );
     migrateToolRequests(db);
+    addColumnIfMissing(
+      db,
+      'tool_requests',
+      'transcript_state',
+      `TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written'))`,
+    );
   }
 }
 

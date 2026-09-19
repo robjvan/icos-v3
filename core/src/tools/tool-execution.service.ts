@@ -1,13 +1,19 @@
 import { isDeepStrictEqual } from 'node:util';
+import { Injectable } from '@nestjs/common';
 import type { ApprovalRepository } from '../approvals/approval.repository';
 import type { SessionStore } from '../conversation/session.store';
-import type { LlmClient } from '../llm/llm.client';
+import type { LlmClient, StreamSink } from '../llm/llm.client';
 import { ToolOffer } from '../llm/llm.protocol';
-import type { LlmResult, LlmToolCall } from '../llm/llm.protocol';
+import type {
+  LlmResult,
+  LlmToolCall,
+  LlmToolRequest,
+} from '../llm/llm.protocol';
 import { ToolRegistry } from './tool-registry';
 import { ToolExecutionRepository } from './tool-execution.repository';
 import type {
   ExecutionOutcome,
+  ExecutionPair,
   FinalOutcome,
   MirrorOutcomeState,
   ToolExecutionInput,
@@ -19,6 +25,7 @@ export type { ToolExecutionInput } from './tool-execution.repository';
 
 const MAX_RESULT_BYTES = 64 * 1024;
 
+@Injectable()
 export class ToolExecutionService {
   private readonly searchTimeoutMs: number;
   private readonly inFlight = new Map<string, Promise<void>>();
@@ -30,6 +37,7 @@ export class ToolExecutionService {
     private readonly llm: Pick<LlmClient, 'chatWithTools'>,
     private readonly approvals: Pick<ApprovalRepository, 'getApproval'>,
     options: { searchTimeoutMs?: number } = {},
+    private readonly streamer?: Pick<LlmClient, 'chatStreamWithTools'>,
   ) {
     this.searchTimeoutMs = options.searchTimeoutMs ?? 2000;
     if (
@@ -40,7 +48,10 @@ export class ToolExecutionService {
       throw new Error('invalid_search_timeout');
   }
 
-  async consume(input: ToolExecutionInput): Promise<ToolExecutionRecord> {
+  async consume(
+    input: ToolExecutionInput,
+    options: { sink?: StreamSink; signal?: AbortSignal } = {},
+  ): Promise<ToolExecutionRecord> {
     let snapshot: string;
     let captured: ToolExecutionInput;
     try {
@@ -107,9 +118,9 @@ export class ToolExecutionService {
       record = this.required(record.requestId);
     }
     if (record.state === 'awaiting_approval') {
-      return this.resume(record.requestId, record.sessionId);
+      return this.resume(record.requestId, record.sessionId, options);
     }
-    return this.maybeFinal(record.requestId);
+    return this.maybeFinal(record.requestId, options);
   }
 
   /**
@@ -123,6 +134,7 @@ export class ToolExecutionService {
   async resume(
     requestId: string,
     sessionId: string,
+    options: { sink?: StreamSink; signal?: AbortSignal } = {},
   ): Promise<ToolExecutionRecord> {
     const record = this.required(requestId);
     if (record.sessionId !== sessionId) throw new Error('invalid_session');
@@ -156,10 +168,23 @@ export class ToolExecutionService {
         }
       }
     }
-    return this.maybeFinal(requestId);
+    return this.maybeFinal(requestId, options);
   }
 
-  private async maybeFinal(requestId: string): Promise<ToolExecutionRecord> {
+  /** Durable completed pairs for conversation context reconstruction. */
+  recentPairs(sessionId: string, limit: number): ExecutionPair[] {
+    return this.ledger.recentExecutions(sessionId, limit);
+  }
+
+  /** Claim the single transcript write for a request (see ledger). */
+  claimTranscript(requestId: string): boolean {
+    return this.ledger.claimTranscript(requestId);
+  }
+
+  private async maybeFinal(
+    requestId: string,
+    options: { sink?: StreamSink; signal?: AbortSignal } = {},
+  ): Promise<ToolExecutionRecord> {
     const record = this.required(requestId);
     if (
       (record.state === 'succeeded' || record.state === 'failed') &&
@@ -168,7 +193,7 @@ export class ToolExecutionService {
       const token = this.ledger.claimFinal(requestId);
       if (token) {
         const durable = this.required(requestId);
-        const outcome = await this.respond(durable);
+        const outcome = await this.respond(durable, options);
         this.ledger.finishFinal(requestId, token, outcome);
       }
     }
@@ -260,6 +285,7 @@ export class ToolExecutionService {
 
   private async respond(
     record: ToolExecutionRecord,
+    options: { sink?: StreamSink; signal?: AbortSignal } = {},
   ): Promise<Extract<FinalOutcome, { state: 'succeeded' | 'failed' }>> {
     const proposal = record.input.proposal;
     if (
@@ -268,26 +294,34 @@ export class ToolExecutionService {
       !record.execution
     )
       throw new Error('invalid_final_state');
+    const request: LlmToolRequest = {
+      sessionId: record.sessionId,
+      messages: [
+        ...record.input.context,
+        {
+          role: 'assistant',
+          content: proposal.content,
+          toolCalls: [{ ...proposal.toolCalls[0], id: record.invocationId }],
+        },
+        {
+          role: 'tool',
+          callId: record.invocationId,
+          content: JSON.stringify(record.execution),
+        },
+      ],
+      tools: [],
+      toolChoice: 'none',
+    };
     let result: LlmResult;
     try {
-      result = await this.llm.chatWithTools({
-        sessionId: record.sessionId,
-        messages: [
-          ...record.input.context,
-          {
-            role: 'assistant',
-            content: proposal.content,
-            toolCalls: [{ ...proposal.toolCalls[0], id: record.invocationId }],
-          },
-          {
-            role: 'tool',
-            callId: record.invocationId,
-            content: JSON.stringify(record.execution),
-          },
-        ],
-        tools: [],
-        toolChoice: 'none',
-      });
+      result =
+        options.sink && this.streamer
+          ? await this.streamer.chatStreamWithTools(
+              request,
+              options.sink,
+              options.signal,
+            )
+          : await this.llm.chatWithTools(request);
     } catch {
       return { state: 'failed', failure: { code: 'llm_failed' } };
     }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { DatabaseService } from '../session/database.service';
+import { Injectable } from '@nestjs/common';
+import { SessionDatabaseService } from '../session/session-database.service';
 import type { SessionSearchResult } from '../session/session.repository';
 import type { LlmMessage, LlmResult } from '../llm/llm.protocol';
 import type {
@@ -101,10 +102,30 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-class LedgerError extends Error {}
+export class LedgerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LedgerError';
+  }
+}
 
+/**
+ * Durable pairing data for one completed invocation, used to rebuild
+ * model context from execution history (the ledger, not the
+ * transcript, is the authority on what a tool returned).
+ */
+export interface ExecutionPair {
+  invocationId: string;
+  proposalContent: string | null;
+  name: ToolName;
+  version: 1;
+  args: Record<string, unknown>;
+  result: unknown;
+}
+
+@Injectable()
 export class ToolExecutionRepository {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly database: SessionDatabaseService) {}
 
   private access<T>(action: () => T): T {
     try {
@@ -414,6 +435,78 @@ export class ToolExecutionRepository {
         })
         .immediate(),
     );
+  }
+
+  /**
+   * Most recent completed invocations for a session, oldest first.
+   * Only invocations with a durable execution result are returned;
+   * pending, mirrored, and invalid rows have nothing to pair.
+   */
+  recentExecutions(sessionId: string, limit: number): ExecutionPair[] {
+    return this.access(() => {
+      const rows = this.database.connection
+        .prepare(
+          `SELECT invocation_id, input_json, validation_json, execution_json
+             FROM tool_requests
+            WHERE session_id = ? AND state IN ('succeeded', 'failed')
+              AND execution_json IS NOT NULL
+            ORDER BY rowid DESC LIMIT ?`,
+        )
+        .all(sessionId, Math.max(1, Math.floor(limit))) as {
+        invocation_id: string;
+        input_json: string;
+        validation_json: string;
+        execution_json: string;
+      }[];
+      const pairs: ExecutionPair[] = [];
+      for (const row of rows.reverse()) {
+        try {
+          const input = JSON.parse(row.input_json) as ToolExecutionInput;
+          const validation = JSON.parse(
+            row.validation_json,
+          ) as ValidationOutcome;
+          if (
+            !validation.ok ||
+            !('request' in validation) ||
+            input.proposal?.kind !== 'tool_calls'
+          )
+            continue;
+          pairs.push({
+            invocationId: row.invocation_id,
+            proposalContent: input.proposal.content,
+            name: validation.request.name,
+            version: validation.request.version,
+            args: JSON.parse(JSON.stringify(validation.request.args)) as Record<
+              string,
+              unknown
+            >,
+            result: JSON.parse(row.execution_json) as unknown,
+          });
+        } catch {
+          continue;
+        }
+      }
+      return pairs;
+    });
+  }
+
+  /**
+   * Claim the one transcript write for a request. Conversation calls
+   * this before appending turn rows; only the claim winner writes, so
+   * retried resumes can never duplicate transcript rows. A crash
+   * between claim and write leaves a gap, matching the existing
+   * store-nothing-on-failure philosophy.
+   */
+  claimTranscript(requestId: string): boolean {
+    return this.access(() => {
+      const result = this.database.connection
+        .prepare(
+          `UPDATE tool_requests SET transcript_state = 'written'
+            WHERE request_id = ? AND transcript_state = 'pending'`,
+        )
+        .run(requestId);
+      return result.changes === 1;
+    });
   }
 
   claimFinal(requestId: string): string | null {

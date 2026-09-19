@@ -13,8 +13,27 @@ import { MemoryCandidateExtractor } from '../src/memory/memory-candidate-extract
 describe('Conversation (e2e)', () => {
   let app: INestApplication<App> | null = null;
   let dir = '';
-  const chat = jest.fn<Promise<{ content: string; model: string }>, [unknown]>(
-    () => Promise.resolve({ content: 'mock reply', model: 'test-model' }),
+  interface MockToolCall {
+    id: string;
+    name: string;
+    version: number;
+    rawArguments: string;
+    args: Record<string, unknown>;
+  }
+
+  interface MockLlmResult {
+    kind: string;
+    content: string | null;
+    model: string;
+    toolCalls?: MockToolCall[];
+  }
+
+  const chatWithTools = jest.fn<Promise<MockLlmResult>, [unknown]>(() =>
+    Promise.resolve({
+      kind: 'text',
+      content: 'mock reply',
+      model: 'test-model',
+    }),
   );
   let streamFails = false;
   let extractFails = false;
@@ -46,25 +65,40 @@ describe('Conversation (e2e)', () => {
       ]);
     },
   );
-  const chatStream = jest.fn(
-    (
-      messages: unknown,
-      sink: { onToken: (content: string) => void },
-    ): Promise<{ content: string; model: string }> => {
-      void messages;
-      if (streamFails) {
-        return Promise.reject(new Error('upstream boom'));
-      }
-      sink.onToken('mock ');
-      sink.onToken('reply');
-      return Promise.resolve({ content: 'mock reply', model: 'test-model' });
-    },
-  );
+  const chatStreamWithTools = jest.fn<
+    Promise<MockLlmResult>,
+    [unknown, { onToken: (content: string) => void }]
+  >((request, sink) => {
+    void request;
+    if (streamFails) {
+      return Promise.reject(new Error('upstream boom'));
+    }
+    sink.onToken('mock ');
+    sink.onToken('reply');
+    return Promise.resolve({
+      kind: 'text',
+      content: 'mock reply',
+      model: 'test-model',
+    });
+  });
+
+  const anyString = expect.any(String) as unknown as string;
 
   interface ConversationResponse {
+    status?: string;
     sessionId: string;
+    requestId?: string;
     reply: string;
     model: string;
+    tool?: { invocationId: string; name: string };
+    result?: unknown;
+    approval?: {
+      approvalId: string;
+      invocationId: string;
+      tool: string;
+      args: Record<string, unknown>;
+    };
+    outcome?: string;
   }
 
   interface HistoryResponse {
@@ -106,7 +140,7 @@ describe('Conversation (e2e)', () => {
         skillsMaxContextChars: 8000,
       })
       .overrideProvider(LlmClient)
-      .useValue({ chat, chatStream })
+      .useValue({ chatWithTools, chatStreamWithTools })
       .overrideProvider(MemoryCandidateExtractor)
       .useValue({ extract })
       .compile();
@@ -124,9 +158,13 @@ describe('Conversation (e2e)', () => {
   }
 
   beforeEach(async () => {
-    chat.mockClear();
-    chat.mockResolvedValue({ content: 'mock reply', model: 'test-model' });
-    chatStream.mockClear();
+    chatWithTools.mockClear();
+    chatWithTools.mockResolvedValue({
+      kind: 'text',
+      content: 'mock reply',
+      model: 'test-model',
+    });
+    chatStreamWithTools.mockClear();
     streamFails = false;
     extract.mockClear();
     extractFails = false;
@@ -159,7 +197,7 @@ describe('Conversation (e2e)', () => {
     expect(body.reply).toBe('mock reply');
     expect(body.model).toBe('test-model');
     // The ICOS session identity reaches the LLM request contract.
-    expect(chat.mock.calls[0][0]).toMatchObject({
+    expect(chatWithTools.mock.calls[0][0]).toMatchObject({
       sessionId: body.sessionId,
     });
   });
@@ -225,7 +263,7 @@ describe('Conversation (e2e)', () => {
     expect(res.text).toContain('event: done');
     expect(res.text).toContain('"content":"mock "');
     expect(res.text).toContain('"reply":"mock reply"');
-    expect(chatStream).toHaveBeenCalledTimes(1);
+    expect(chatStreamWithTools).toHaveBeenCalledTimes(1);
   });
 
   it('POST /core/conversation/stream emits an error event on failure', async () => {
@@ -422,7 +460,7 @@ describe('Conversation (e2e)', () => {
     expect(body.reply).toContain('Host System');
     expect(body.reply).toContain('Status: healthy');
     expect(body.command).toMatchObject({ kind: 'data' });
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
     expect(extract).not.toHaveBeenCalled();
 
     // Nothing persisted as conversation.
@@ -435,7 +473,7 @@ describe('Conversation (e2e)', () => {
       .post('/core/conversation')
       .send({ message: '/nope' })
       .expect(404);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('rejects malformed slash commands with 400', async () => {
@@ -443,7 +481,7 @@ describe('Conversation (e2e)', () => {
       .post('/core/conversation')
       .send({ message: '/' })
       .expect(400);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('streams slash commands as meta then done with no tokens', async () => {
@@ -456,7 +494,7 @@ describe('Conversation (e2e)', () => {
     expect(res.text).not.toContain('event: token');
     expect(res.text).toContain('event: done');
     expect(res.text).toContain('"model":"core"');
-    expect(chatStream).not.toHaveBeenCalled();
+    expect(chatStreamWithTools).not.toHaveBeenCalled();
   });
 
   it('GET /core/skills reports the empty enabled catalog', async () => {
@@ -476,7 +514,7 @@ describe('Conversation (e2e)', () => {
     expect(body.model).toBe('core');
     expect(body.reply).toContain('Skills: none');
     expect(body.command).toMatchObject({ kind: 'data' });
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
     expect(extract).not.toHaveBeenCalled();
 
     const listed = await request(http()).get('/core/sessions').expect(200);
@@ -520,7 +558,7 @@ describe('Conversation (e2e)', () => {
     });
 
     await request(http()).get('/core/skills/nope').expect(404);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('suggest and discover rank without activating or injecting', async () => {
@@ -560,14 +598,14 @@ describe('Conversation (e2e)', () => {
     });
     const sessions = await request(http()).get('/core/sessions').expect(200);
     expect((sessions.body as { sessions: unknown[] }).sessions).toHaveLength(0);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('M7c turn scopes: explicit pins, one-shot pulls, contextual discovery', async () => {
     type WireMessage = { role: string; content: string };
     const sent = (call: number): WireMessage[] =>
       (
-        chat.mock.calls[call][0] as {
+        chatWithTools.mock.calls[call][0] as {
           messages: WireMessage[];
           sessionId: string;
         }
@@ -716,12 +754,12 @@ describe('Conversation (e2e)', () => {
     ).toHaveLength(2);
 
     // The next LLM turn sees only the first turn plus the new message.
-    chat.mockClear();
+    chatWithTools.mockClear();
     await request(http())
       .post('/core/conversation')
       .send({ message: 'third', sessionId })
       .expect(200);
-    const sent = chat.mock.calls[0][0] as {
+    const sent = chatWithTools.mock.calls[0][0] as {
       messages: { content: string }[];
     };
     expect(sent.messages.map((m) => m.content)).toEqual([
@@ -836,7 +874,8 @@ describe('Conversation (e2e)', () => {
     const id = (created.body as { id: string }).id;
 
     // The model insists approval happened. It did not.
-    chat.mockResolvedValueOnce({
+    chatWithTools.mockResolvedValueOnce({
+      kind: 'text',
       content: 'Sure, you approved that. Proceeding.',
       model: 'test-model',
     });
@@ -1017,5 +1056,344 @@ describe('Conversation (e2e)', () => {
       .post('/core/clarifications')
       .send({ sessionId, question: 'q?', options: ['dup', 'dup'] })
       .expect(400);
+  });
+
+  describe('tool turns', () => {
+    function searchCall(query = 'teal', limit = 20) {
+      const rawArguments = JSON.stringify({ query, limit });
+      return {
+        kind: 'tool_calls',
+        content: null,
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'model-call-1',
+            name: 'session.search',
+            version: 1,
+            rawArguments,
+            args: { query, limit },
+          },
+        ],
+      };
+    }
+
+    function renameCall(title = 'Ward map') {
+      const rawArguments = JSON.stringify({ title });
+      return {
+        kind: 'tool_calls',
+        content: null,
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'model-call-1',
+            name: 'session.rename',
+            version: 1,
+            rawArguments,
+            args: { title },
+          },
+        ],
+      };
+    }
+
+    function finalText(content: string) {
+      return { kind: 'text', content, model: 'test-model' };
+    }
+
+    it('executes a search turn against the real transcript, scoped to the session', async () => {
+      const other = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal private' })
+        .expect(200);
+      const otherId = (other.body as ConversationResponse).sessionId;
+
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(finalText('teal is local'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      const body = turn.body as ConversationResponse;
+      expect(body.status).toBe('ok');
+      expect(body.reply).toBe('teal is local');
+      expect(body.requestId).toBeDefined();
+      expect(body.tool).toMatchObject({
+        invocationId: anyString,
+        name: 'session.search',
+      });
+
+      // The final model call consumed the durable scoped result.
+      const finalCall = chatWithTools.mock.calls.find(
+        (call) =>
+          Array.isArray((call[0] as { tools?: unknown[] }).tools) &&
+          ((call[0] as { tools?: unknown[] }).tools?.length ?? -1) === 0,
+      );
+      expect(finalCall).toBeDefined();
+      const toolMessage = (
+        finalCall?.[0] as {
+          messages: { role: string; callId?: string; content: string }[];
+        }
+      ).messages.find((m) => m.role === 'tool');
+      expect(toolMessage?.callId).toBe(body.tool?.invocationId);
+      const result = JSON.parse(toolMessage?.content ?? '{}') as {
+        ok: boolean;
+        matches: { sessionId: string; content: string }[];
+      };
+      expect(result.ok).toBe(true);
+      expect(result.matches.map((m) => m.sessionId)).toEqual([sessionId]);
+      expect(result.matches.every((m) => m.sessionId !== otherId)).toBe(true);
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find teal', 'teal is local']);
+    });
+
+    it('delivers the persisted result when the final response failed', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockRejectedValueOnce(new Error('provider down'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      const body = turn.body as ConversationResponse;
+      expect(body.status).toBe('ok');
+      expect(body.reply).toContain('could not be completed');
+      const delivered = body.result as {
+        ok: boolean;
+        matches: { sessionId: string; content: string }[];
+      };
+      expect(delivered.ok).toBe(true);
+      expect(delivered.matches).toHaveLength(1);
+      expect(delivered.matches[0]).toMatchObject({
+        sessionId,
+        content: 'teal local',
+      });
+
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: body.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe(body.reply);
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find teal', body.reply]);
+    });
+
+    it('parks renames as 202, then resumes after approval exactly once', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'call it Ward map', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+      expect(pending.status).toBe('approval_required');
+      expect(pending.requestId).toBeDefined();
+      expect(pending.approval).toMatchObject({
+        approvalId: anyString,
+        tool: 'session.rename',
+        args: { title: 'Ward map' },
+      });
+
+      // Nothing persisted while approval is pending.
+      const before = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (before.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply']);
+
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe('renamed');
+
+      const sessions = await request(http()).get('/core/sessions').expect(200);
+      const renamed = (
+        sessions.body as { sessions: { sessionId: string; title?: string }[] }
+      ).sessions.find((s) => s.sessionId === sessionId);
+      expect(renamed?.title).toBe('Ward map');
+
+      // Duplicate resume answers from the durable record, no re-execution.
+      const again = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((again.body as ConversationResponse).reply).toBe('renamed');
+      const after = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (after.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply', 'call it Ward map', 'renamed']);
+    });
+
+    it('mirrors rejection with zero execution', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Nope'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/reject`)
+        .send({ sessionId })
+        .expect(200);
+
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).outcome).toBe('rejected');
+
+      const sessions = await request(http()).get('/core/sessions').expect(200);
+      const kept = (
+        sessions.body as { sessions: { sessionId: string; title?: string }[] }
+      ).sessions.find((s) => s.sessionId === sessionId);
+      expect(kept?.title).toBeUndefined();
+    });
+
+    it('validates resume requests and denies foreign sessions', async () => {
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId: 'not-a-uuid', requestId: 'also-bad' })
+        .expect(400);
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({
+          sessionId: '11111111-1111-4111-8111-111111111111',
+          requestId: '22222222-2222-4222-8222-222222222222',
+        })
+        .expect(404);
+
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      const fork = await request(http())
+        .post('/core/conversation')
+        .send({ message: '/fork', sessionId })
+        .expect(200);
+      const forkId = (fork.body as ConversationResponse).sessionId;
+      expect(forkId).not.toBe(sessionId);
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId: forkId, requestId: pending.requestId })
+        .expect(400);
+    });
+
+    it('streams tool and approval events over SSE', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatStreamWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatStreamWithTools.mockResolvedValueOnce(finalText('teal is local'));
+      const searched = await request(http())
+        .post('/core/conversation/stream')
+        .send({ message: 'find teal', sessionId })
+        .expect(200)
+        .expect('Content-Type', /event-stream/);
+      expect(searched.text).toContain('event: tool');
+      expect(searched.text).toContain('"reply":"teal is local"');
+
+      chatStreamWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation/stream')
+        .send({ message: 'rename it', sessionId })
+        .expect(200)
+        .expect('Content-Type', /event-stream/);
+      expect(parked.text).toContain('event: approval');
+      expect(parked.text).toContain('event: done');
+      expect(parked.text).not.toContain('event: token');
+    });
+
+    it('keeps the execution record across /undo without re-executing', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+
+      // Undo hides the turn text but the ledger still answers.
+      await request(http())
+        .post('/core/conversation')
+        .send({ message: '/undo', sessionId })
+        .expect(200);
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe('renamed');
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      const contents = (history.body as HistoryResponse).messages.map(
+        (m) => m.content,
+      );
+      expect(contents.filter((c) => c === 'renamed')).toHaveLength(1);
+    });
   });
 });
