@@ -3,3 +3,6 @@
 
 # VSCodeCounter files
 .VSCodeCounter
+
+# Environment variables
+**/.env
