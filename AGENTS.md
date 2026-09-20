@@ -11,15 +11,25 @@ platform, not a commercial product.
 - `tsc` and `eslint` must be clean before committing.
 - No fake assistant messages, no silent side effects. State changes are explicit
   and persisted to SQLite.
-- Apps under `apps/` (core, epistemic-memory, model-sentinel) do not import one
-  another; they communicate through shared packages or explicit boundaries.
+- The runtime lives under `core/`. There are no `apps/` sub-projects; do not
+  reference `apps/*` paths.
+- Deployment target is a **Docker container** (`docker-compose.yml` +
+  `core/Dockerfile`). Whether it runs on localhost or on the local network is
+  up to the user — never assume bare-metal deployment. Keep the compose path
+  working: `docker compose up --build` should launch a healthy `icos-v3-core`.
 - Provider-agnostic: never hard-code a provider. All LLM access goes through the
-  OpenAI-compatible interface.
-- Never commit credentials, API headers, or secrets (see `apps/*/.env.sample`).
+  OpenAI-compatible interface. Remember `localhost` inside the container is the
+  container itself — document `host.docker.internal` / LAN addresses where
+  relevant instead of assuming host-local URLs resolve in-container.
+- Never commit credentials, API headers, or secrets (see `core/.env.sample`;
+  `core/.env` is local-only and must stay uncommitted).
 
 ## Orientation
 
 - `.reference/plans/` — milestone plans and design notes.
 - `.reference/plans/evidence/` — verification evidence for closed milestones.
 - `docs/` — user-facing documents.
+- `docker-compose.yml` — supported launch path (`icos-v3-core` service).
+- `core/Dockerfile` — dev server image used by compose.
+- `core/.env.sample` — authoritative runtime configuration reference.
 - `INDEX.md` / `README.md` — project map and overview.

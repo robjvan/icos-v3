@@ -170,17 +170,27 @@ The intent is for the repository to document the development process rather than
 
 # Getting Started
 
+## Deployment target
+
+The supported deployment target is a **Docker container**, defined by
+`docker-compose.yml` and `core/Dockerfile`.
+
+Run it wherever suits you: your local machine, or any host on your local
+network (publish port `3000` accordingly). Bare-metal `npm run start` remains
+available for local development, but Docker is the expected way to launch and
+play with the stack.
+
 ## Requirements
 
-ICOS v3 currently requires:
-
-- **Node.js 24.13.0**
-- **npm 11.6.2**
-- An OpenAI-compatible LLM endpoint
+- **Docker** with **Docker Compose** — the supported way to run the stack.
+- **Node.js 24.13.0** and **npm 11.6.2** — only needed for local development
+  outside Docker.
+- An OpenAI-compatible LLM endpoint.
 
 The model itself does not need to run on the same machine.
 
-Local models can be provided through software such as Ollama or llama.cpp, while remote providers can be used where appropriate.
+Local models can be provided through software such as Ollama or llama.cpp, via
+the Docker Model Runner, or remote providers can be used where appropriate.
 
 ---
 
@@ -190,14 +200,11 @@ Clone the repository:
 
 ```sh
 git clone https://git.exilelogic.ca/robjvan/icos-v3.git
-cd icos-v3/core
+cd icos-v3
 ```
 
-Install dependencies:
-
-```sh
-npm install
-```
+No `npm install` is needed for the Docker path — the image build handles
+dependencies.
 
 ---
 
@@ -208,10 +215,10 @@ ICOS v3 uses environment variables for runtime configuration.
 Create a local environment file from the provided example:
 
 ```sh
-cp .env.example .env
+cp core/.env.sample core/.env
 ```
 
-Open `.env` and configure the LLM provider and other required settings.
+Open `core/.env` and configure the LLM provider and other required settings.
 
 For example:
 
@@ -225,28 +232,50 @@ LLM_MODEL=<your-model>
 PORT=3000
 ```
 
-The exact variables and defaults may change as development continues, so **`.env.example` is the authoritative configuration reference**.
+The exact variables and defaults may change as development continues, so **`core/.env.sample` is the authoritative configuration reference**.
 
-> **Do not commit your `.env` file.** It is intended for local configuration and may contain credentials.
+> **Do not commit your `core/.env` file.** It is intended for local configuration and may contain credentials.
+
+> **Docker networking note:** inside the container, `localhost` refers to the
+> container itself, not your machine. If your LLM runs on the Docker host
+> (e.g. local Ollama), point `LLM_BASE_URL` at `http://host.docker.internal:<port>/v1`
+> or your host's LAN address. Remote provider URLs work unchanged.
 
 ---
 
-## Run ICOS
+## Run ICOS (Docker — recommended)
 
 From the repository root:
 
 ```sh
-cd core
-npm run start
+docker compose up --build
 ```
 
-Once the application starts, open:
+Once the `icos-v3-core` service is healthy, open:
 
 ```text
 http://localhost:3000
 ```
 
+(Or `http://<host>:3000` when running on another machine on your network.)
+
 The development chat interface should be available there.
+
+Stop with `Ctrl+C`, or `docker compose down` from another shell.
+
+---
+
+## Run ICOS locally (without Docker)
+
+For bare-metal development:
+
+```sh
+cd core
+npm install
+npm run start
+```
+
+Then open `http://localhost:3000` as above.
 
 ---
 
@@ -323,12 +352,15 @@ The project is organized around the runtime and its experimental evidence.
 
 ```text
 core/                   # ICOS runtime
+  Dockerfile            # Dev server image for docker-compose use
+  .env.sample           # Authoritative runtime configuration template
+
+docker-compose.yml      # Supported launch path (icos-v3-core service)
 
 .reference/
   plans/                # Milestone plans
   plans/evidence/       # Verification and live-run evidence
 
-.env.example            # Runtime configuration template
 LICENSE                 # PolyForm Noncommercial License
 COMMERCIAL-LICENSE.md   # Commercial licensing information
 ```
