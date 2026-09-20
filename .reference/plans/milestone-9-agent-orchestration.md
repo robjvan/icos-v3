@@ -94,7 +94,16 @@ It must consume the authoritative outcome returned by M8.
 
 ---
 
-# [ ] M9a — Agent Run State
+# [x] M9a — Agent Run State (implemented September 20, 2026)
+
+Implemented as `agent_runs` in the sessions database plus
+`core/src/agent/agent-run.repository.ts`: one row per non-command
+turn with goal, session, step request ids (M8 ledger references by
+convention), counters, limits, approval pointer, and terminal state.
+The turn loop records/parks/completes runs with failure isolation —
+tracking can never fail conversation. Lifecycle values are
+provisional; M9b owns the machine. Evidence:
+`milestone-9a-evidence-runstate.md`.
 
 Introduce an explicit state representation for an **agent run**.
 
@@ -138,7 +147,15 @@ Do not duplicate the M8 invocation ledger unnecessarily. Agent state should refe
 
 ---
 
-# [ ] M9b — Agent Lifecycle
+# [x] M9b — Agent Lifecycle (implemented September 20, 2026)
+
+Implemented in the turn loop over the M9a store: `created` →
+`reasoning` → `action_proposed` → `executing` → `observing` per step,
+`awaiting_approval` on park, terminal `completed` / `failed` /
+`cancelled` (client disconnect, stream path) / `budget_exhausted`
+(bound forced the answer, still delivered). M9a-era `agent_runs`
+tables migrate with stranded `running` rows mapped to `failed`.
+Evidence: `milestone-9b-evidence-lifecycle.md`.
 
 Define explicit agent-run states.
 
@@ -254,6 +271,27 @@ Do not silently convert execution failures into empty or successful observations
 ---
 
 # [ ] M9e — Iterative Execution
+
+> Status (September 19, 2026): the loop mechanics below are implemented
+> and verified, but M9a–M9d are still open — there is no persisted run
+> record, no lifecycle states, and no persisted termination. What exists
+> is tool chaining inside a conversation turn, not an agent run yet, so
+> this slice is not claimed.
+
+Implemented as a bounded multi-step loop in `ConversationService`
+(`converse`/`converseStream`) over the unchanged M8 substrate: each step
+proposes at most one call through the existing `consume` path (new
+`skipFinal` defers the tools-disabled final on intermediate steps);
+completed approval-free searches append an assistant/tool pair and propose
+again; approval-gated tools, text answers, and invalid proposals end the
+turn through the standard render path. Bound: `MAX_TOOL_STEPS = 5`
+executions, then a forced `toolChoice: 'none'` text proposal; bound
+exhaustion with a pending search finalizes via the existing `resume`
+path. Fan-out proposals still fail closed (`invalid_call_count`); the
+system prompt steers one call per response. Parallel calls remain out of
+scope. Evidence: `milestone-9e-evidence-multistep.md`.
+
+---
 
 Implement the first bounded reasoning/action loop.
 

@@ -22,6 +22,7 @@ import { SkillService } from '../skills/skill.service';
 import type { ToolExecutionInput } from '../tools/tool-execution.repository';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
+import { MAX_TOOL_STEPS, TOOL_STEP_INSTRUCTION } from './conversation.service';
 import type { ConversationStreamEvent } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
@@ -33,6 +34,7 @@ import {
   renameProposal,
   searchProposal,
   searchRecord,
+  stubAgentRuns,
   stubToolExecution,
   stubToolLlm,
   textProposal,
@@ -142,6 +144,7 @@ function setup(
   const tools = stubToolExecution();
   if (consumeImpl) tools.consume.mockImplementation(consumeImpl);
   const registry = new ToolRegistry();
+  const agentRuns = stubAgentRuns();
   return {
     service: new ConversationService(
       store,
@@ -152,12 +155,14 @@ function setup(
       skills,
       tools.service,
       registry,
+      agentRuns.service,
       config,
     ),
     repository,
     chatWithTools,
     chatStreamWithTools,
     tools,
+    agentRuns,
     extract,
     saveCandidates,
   };
@@ -182,7 +187,7 @@ describe('ConversationService', () => {
     ]);
     expect(sent.messages[0]).toEqual({
       role: 'system',
-      content: 'test-system',
+      content: `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
     });
     expect(sent.messages[sent.messages.length - 1]).toEqual({
       role: 'user',
@@ -206,7 +211,7 @@ describe('ConversationService', () => {
     const secondCall = chatWithTools.mock.calls[1][0];
     expect(secondCall.sessionId).toBe(first.sessionId);
     expect(secondCall.messages.map((m) => m.content)).toEqual([
-      'test-system',
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
       'first',
       'hi back',
       'second',
@@ -229,7 +234,7 @@ describe('ConversationService', () => {
     const sent = chatWithTools.mock.calls[1][0];
     // system + last 5 stored + new input.
     expect(sent.messages.map((m) => m.content)).toEqual([
-      'test-system',
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
       'stored-5',
       'stored-6',
       'stored-7',
@@ -329,13 +334,22 @@ describe('ConversationService', () => {
   });
 
   describe('tool turns', () => {
-    it('executes a search proposal and persists the final answer', async () => {
-      const { service, repository, extract, tools } = setup(
+    it('chains a search step into a text answer with the durable pair', async () => {
+      let proposals = 0;
+      const { service, repository, extract, tools, chatWithTools } = setup(
         testConfig(),
-        () => Promise.resolve(searchProposal()),
+        () =>
+          Promise.resolve(
+            proposals++ === 0 ? searchProposal() : textProposal('teal found'),
+          ),
         undefined,
         undefined,
-        (input) => Promise.resolve(searchRecord(input, 'teal found')),
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
       );
 
       const result = await service.converse('find teal');
@@ -346,6 +360,15 @@ describe('ConversationService', () => {
         invocationId: 'inv-search-1',
         name: 'session.search',
       });
+      // The second proposal saw the first step as an assistant/tool pair.
+      expect(chatWithTools).toHaveBeenCalledTimes(2);
+      const second = chatWithTools.mock.calls[1][0];
+      const tail = second.messages.slice(-2);
+      expect(tail[0]).toMatchObject({
+        role: 'assistant',
+        toolCalls: [{ id: 'inv-search-1', name: 'session.search' }],
+      });
+      expect(tail[1]).toMatchObject({ role: 'tool', callId: 'inv-search-1' });
       expect(await repository.getMessages(result.sessionId)).toEqual([
         { role: 'user', content: 'find teal' },
         { role: 'assistant', content: 'teal found' },
@@ -460,28 +483,52 @@ describe('ConversationService', () => {
       expect(await repository.getMessages(result.sessionId)).toHaveLength(0);
     });
 
-    it('delivers the durable result when the final response failed', async () => {
-      const failedFinal = (input: ToolExecutionInput) =>
+    it('finalizes through resume when the step bound is exhausted', async () => {
+      let lastInput: ToolExecutionInput | undefined;
+      const { service, repository, extract, tools, chatWithTools, agentRuns } =
+        setup(
+          testConfig(),
+          // The model keeps searching, so the bound forces finalization.
+          () => Promise.resolve(searchProposal()),
+          undefined,
+          undefined,
+          (input) => {
+            lastInput = input;
+            return Promise.resolve(searchRecord(input, 'teal found'));
+          },
+        );
+      tools.resume.mockImplementation(() =>
         Promise.resolve({
-          ...searchRecord(input, ''),
+          ...searchRecord(lastInput as ToolExecutionInput, ''),
           final: {
             state: 'failed' as const,
             failure: { code: 'llm_failed' as const },
           },
-        });
-      const { service, repository, extract, tools } = setup(
-        testConfig(),
-        () => Promise.resolve(searchProposal()),
-        undefined,
-        undefined,
-        failedFinal,
+        }),
       );
       tools.claimTranscript.mockReturnValueOnce(true).mockReturnValue(false);
 
       const result = await service.converse('find teal');
 
+      expect(chatWithTools).toHaveBeenCalledTimes(MAX_TOOL_STEPS + 1);
+      const forced = chatWithTools.mock.calls[MAX_TOOL_STEPS][0];
+      expect(forced.tools).toEqual([]);
+      expect(forced.toolChoice).toBe('none');
+      expect(tools.resume).toHaveBeenCalledTimes(1);
       expect(result.status).toBe('ok');
       expect(result.reply).toContain('could not be completed');
+      // The bound forced the answer: delivered, but budget_exhausted.
+      // (The mock defies toolChoice:none with a sixth call, which the
+      // loop executes once and finalizes; the real parser rejects calls
+      // under toolChoice:none before consume ever sees them.)
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'budget_exhausted',
+        {
+          reason: 'step_bound',
+          toolSteps: MAX_TOOL_STEPS + 1,
+        },
+      );
       expect(result.tool).toEqual({
         invocationId: 'inv-search-1',
         name: 'session.search',
@@ -499,12 +546,21 @@ describe('ConversationService', () => {
     });
 
     it('never writes the transcript twice for a retried turn', async () => {
+      let proposals = 0;
       const { service, repository, tools } = setup(
         testConfig(),
-        () => Promise.resolve(searchProposal()),
+        () =>
+          Promise.resolve(
+            proposals++ === 0 ? searchProposal() : textProposal('teal found'),
+          ),
         undefined,
         undefined,
-        (input) => Promise.resolve(searchRecord(input, 'teal found')),
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
       );
       tools.claimTranscript.mockReturnValueOnce(true).mockReturnValue(false);
 
@@ -514,6 +570,262 @@ describe('ConversationService', () => {
       expect(await repository.getMessages(first.sessionId)).toEqual([
         { role: 'user', content: 'find teal' },
         { role: 'assistant', content: 'teal found' },
+      ]);
+    });
+  });
+
+  describe('multi-step turns', () => {
+    function routeByKind(
+      input: ToolExecutionInput,
+    ): Promise<
+      import('../tools/tool-execution.repository').ToolExecutionRecord
+    > {
+      if (input.proposal.kind === 'text') {
+        return Promise.resolve(closedTextRecord(input));
+      }
+      if (
+        input.proposal.kind === 'tool_calls' &&
+        input.proposal.toolCalls[0]?.name === 'session.rename'
+      ) {
+        return Promise.resolve(pendingRenameRecord(input));
+      }
+      return Promise.resolve(searchRecord(input, 'teal found'));
+    }
+
+    it('parks a rename that follows a search with no writes', async () => {
+      const seen: string[] = [];
+      const { service, repository, chatWithTools } = setup(
+        testConfig(),
+        () =>
+          Promise.resolve(
+            seen.length === 0 ? searchProposal() : renameProposal(),
+          ),
+        undefined,
+        undefined,
+        (input) => {
+          seen.push(input.proposal.kind);
+          return routeByKind(input);
+        },
+      );
+
+      const result = await service.converse('find teal then call it Ward');
+
+      expect(chatWithTools).toHaveBeenCalledTimes(2);
+      expect(result.status).toBe('approval_required');
+      expect(result.tool).toEqual({
+        invocationId: 'inv-rename-1',
+        name: 'session.rename',
+      });
+      expect(result.approval).toMatchObject({
+        approvalId: 'appr-1',
+        tool: 'session.rename',
+      });
+      expect(await repository.getMessages(result.sessionId)).toHaveLength(0);
+    });
+
+    it('still rejects fan-out proposals without executing anything', async () => {
+      const fanOut = {
+        ...searchProposal(),
+        toolCalls: [
+          searchProposal().toolCalls[0],
+          searchProposal().toolCalls[0],
+        ],
+      };
+      const { service, extract, tools } = setup(
+        testConfig(),
+        () => Promise.resolve(fanOut),
+        undefined,
+        undefined,
+        (input) => Promise.resolve(invalidRecord(input)),
+      );
+
+      await expect(service.converse('find everything')).rejects.toBeInstanceOf(
+        BadGatewayException,
+      );
+      // The rejection happened on the first step: one proposal, one consume.
+      expect(tools.consume).toHaveBeenCalledTimes(1);
+      await flushMicrotasks();
+      expect(extract).not.toHaveBeenCalled();
+    });
+
+    it('streams per-step tool events with a single terminal done', async () => {
+      let proposals = 0;
+      const { service } = setup(
+        testConfig(),
+        undefined,
+        () =>
+          Promise.resolve(
+            proposals++ < 2 ? searchProposal() : textProposal('both found'),
+          ),
+        undefined,
+        (input) => routeByKind(input),
+      );
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream('find both', undefined, (event) =>
+        events.push(event),
+      );
+
+      expect(events[0]).toMatchObject({ type: 'meta' });
+      // Two step-progress events plus the terminal emit for the last tool.
+      expect(events.filter((event) => event.type === 'tool')).toHaveLength(3);
+      expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
+      expect(events[events.length - 1]).toMatchObject({
+        type: 'done',
+        reply: 'both found',
+        status: 'ok',
+        tool: { invocationId: 'inv-search-1', name: 'session.search' },
+      });
+    });
+  });
+
+  describe('agent runs', () => {
+    it('records steps and terminal state for a text turn', async () => {
+      const { service, agentRuns } = setup();
+
+      const result = await service.converse('hello');
+
+      expect(agentRuns.createRun).toHaveBeenCalledWith({
+        sessionId: result.sessionId,
+        goal: 'hello',
+        limits: { maxToolSteps: MAX_TOOL_STEPS },
+      });
+      expect(agentRuns.transitionRun).toHaveBeenCalledWith(
+        'run-1',
+        'reasoning',
+      );
+      expect(agentRuns.recordStep).toHaveBeenCalledWith('run-1', {
+        requestId: result.requestId,
+        toolCalls: 0,
+      });
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'completed',
+        {
+          reason: 'final_answer',
+          toolSteps: 0,
+        },
+      );
+      expect(agentRuns.markParked).not.toHaveBeenCalled();
+    });
+
+    it('walks reasoning to observing across chained searches', async () => {
+      let proposals = 0;
+      const { service, agentRuns } = setup(
+        testConfig(),
+        () =>
+          Promise.resolve(
+            proposals++ < 2 ? searchProposal() : textProposal('both found'),
+          ),
+        undefined,
+        undefined,
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
+      );
+
+      const result = await service.converse('find both');
+
+      expect(result.status).toBe('ok');
+      expect(agentRuns.transitionRun.mock.calls.map((call) => call[1])).toEqual(
+        [
+          'reasoning',
+          'action_proposed',
+          'executing',
+          'observing',
+          'reasoning',
+          'action_proposed',
+          'executing',
+          'observing',
+          'reasoning',
+        ],
+      );
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'completed',
+        {
+          reason: 'final_answer',
+          toolSteps: 2,
+        },
+      );
+    });
+
+    it('records parked runs with the approval pointer', async () => {
+      const { service, agentRuns } = setup(
+        testConfig(),
+        () => Promise.resolve(renameProposal()),
+        undefined,
+        undefined,
+        (input) => Promise.resolve(pendingRenameRecord(input)),
+      );
+
+      const result = await service.converse('call it Ward');
+
+      expect(result.status).toBe('approval_required');
+      expect(agentRuns.markParked).toHaveBeenCalledWith('run-1', 'appr-1');
+      expect(agentRuns.markTerminal).not.toHaveBeenCalled();
+    });
+
+    it('completes the parked run on resume', async () => {
+      const { service, agentRuns, tools } = setup();
+      agentRuns.findByRequest.mockReturnValue({ id: 'run-9' });
+      tools.resume.mockImplementation((requestId: string) =>
+        Promise.resolve(
+          searchRecord(
+            {
+              requestId,
+              sessionId: 's-1',
+              context: [{ role: 'user', content: 'find teal' }],
+              allowedTools: ['session.search'],
+              proposal: searchProposal(),
+            },
+            'teal found',
+          ),
+        ),
+      );
+
+      const result = await service.resumeTurn('req-1', 's-1');
+
+      expect(result.status).toBe('ok');
+      expect(agentRuns.findByRequest).toHaveBeenCalledWith('s-1', 'req-1');
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-9',
+        'completed',
+        {
+          reason: 'final_answer',
+          toolSteps: 0,
+        },
+      );
+    });
+
+    it('marks failed runs without failing the turn outcome path', async () => {
+      const { service, agentRuns } = setup(testConfig(), () =>
+        Promise.reject(new Error('provider down')),
+      );
+
+      await expect(service.converse('hello')).rejects.toThrow('provider down');
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith('run-1', 'failed', {
+        reason: 'turn_error',
+        toolSteps: 0,
+      });
+    });
+
+    it('tracking failures never fail the turn', async () => {
+      const { service, repository, agentRuns } = setup();
+      agentRuns.createRun.mockImplementationOnce(() => {
+        throw new Error('store down');
+      });
+
+      const result = await service.converse('hello');
+
+      expect(result.status).toBe('ok');
+      expect(result.reply).toBe('hi back');
+      expect(await repository.getMessages(result.sessionId)).toEqual([
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'hi back' },
       ]);
     });
   });
@@ -605,16 +917,50 @@ describe('ConversationService', () => {
       expect(await repository.getMessages(sessionId)).toHaveLength(0);
     });
 
+    it('marks the run cancelled when the client disconnects', async () => {
+      const { service, agentRuns } = setup(testConfig(), undefined, () =>
+        Promise.reject(new Error('aborted')),
+      );
+      const controller = new AbortController();
+      controller.abort();
+      const events: ConversationStreamEvent[] = [];
+
+      await service.converseStream(
+        'hello',
+        undefined,
+        (event) => events.push(event),
+        controller.signal,
+      );
+
+      expect(events[events.length - 1]).toMatchObject({ type: 'error' });
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'cancelled',
+        {
+          reason: 'cancelled',
+          toolSteps: 0,
+        },
+      );
+    });
+
     it('emits tool then done for executed searches', async () => {
+      let proposals = 0;
       const { service } = setup(
         testConfig(),
-        () => Promise.resolve(searchProposal()),
+        undefined,
         (_request, sink) => {
           sink.onToken('looking ');
-          return Promise.resolve(searchProposal());
+          return Promise.resolve(
+            proposals++ === 0 ? searchProposal() : textProposal('teal found'),
+          );
         },
         undefined,
-        (input) => Promise.resolve(searchRecord(input, 'teal found')),
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
       );
       const events: ConversationStreamEvent[] = [];
 

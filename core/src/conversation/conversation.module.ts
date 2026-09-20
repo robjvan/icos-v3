@@ -30,6 +30,7 @@ import { ToolExecutionRepository } from '../tools/tool-execution.repository';
 import { ToolExecutionService } from '../tools/tool-execution.service';
 import { ToolRegistry } from '../tools/tool-registry';
 import { CandidatesController } from './candidates.controller';
+import { AgentRunRepository } from '../agent/agent-run.repository';
 import { ConversationController } from './conversation.controller';
 import { ConversationService } from './conversation.service';
 import { SessionStore } from './session.store';
@@ -106,6 +107,7 @@ const toolExecutionServiceProvider = {
     ToolRegistry,
     ToolExecutionRepository,
     toolExecutionServiceProvider,
+    AgentRunRepository,
     ConversationService,
     SessionStore,
   ],

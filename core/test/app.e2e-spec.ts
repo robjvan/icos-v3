@@ -1,12 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { CoreModule } from '../src/core.module';
 import { CORE_CONFIG } from '../src/config';
+import { TOOL_STEP_INSTRUCTION } from '../src/conversation/conversation.service';
 import { LlmClient } from '../src/llm/llm.client';
 import { MemoryCandidateExtractor } from '../src/memory/memory-candidate-extractor';
 
@@ -200,6 +202,46 @@ describe('Conversation (e2e)', () => {
     expect(chatWithTools.mock.calls[0][0]).toMatchObject({
       sessionId: body.sessionId,
     });
+  });
+
+  it('persists one agent run per turn with steps and terminal state', async () => {
+    const res = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (res.body as ConversationResponse).sessionId;
+
+    const db = new Database(join(dir, 'sessions.sqlite'), {
+      readonly: true,
+    });
+    try {
+      const rows = db
+        .prepare(`SELECT * FROM agent_runs WHERE session_id = ?`)
+        .all(sessionId) as {
+        goal: string;
+        state: string;
+        request_ids: string;
+        current_request_id: string;
+        iteration_count: number;
+        tool_call_count: number;
+        limits_json: string;
+        termination_json: string;
+      }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ goal: 'hello', state: 'completed' });
+      expect(JSON.parse(rows[0].request_ids)).toHaveLength(1);
+      expect(rows[0].current_request_id).toBe(
+        (res.body as ConversationResponse).requestId,
+      );
+      expect(rows[0].iteration_count).toBe(1);
+      expect(rows[0].tool_call_count).toBe(0);
+      expect(JSON.parse(rows[0].limits_json)).toEqual({ maxToolSteps: 5 });
+      expect(JSON.parse(rows[0].termination_json)).toMatchObject({
+        reason: 'final_answer',
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('retains history across calls in the same session', async () => {
@@ -763,7 +805,7 @@ describe('Conversation (e2e)', () => {
       messages: { content: string }[];
     };
     expect(sent.messages.map((m) => m.content)).toEqual([
-      'test-system',
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
       'first',
       'mock reply',
       'third',
@@ -1127,15 +1169,17 @@ describe('Conversation (e2e)', () => {
         name: 'session.search',
       });
 
-      // The final model call consumed the durable scoped result.
-      const finalCall = chatWithTools.mock.calls.find(
-        (call) =>
-          Array.isArray((call[0] as { tools?: unknown[] }).tools) &&
-          ((call[0] as { tools?: unknown[] }).tools?.length ?? -1) === 0,
+      // The second proposal consumed the durable scoped result while
+      // tools stayed offered (multi-step chaining, not a disabled final).
+      const chained = chatWithTools.mock.calls.find((call) =>
+        ((call[0] as { messages?: { role?: string }[] }).messages ?? []).some(
+          (m) => m.role === 'tool',
+        ),
       );
-      expect(finalCall).toBeDefined();
+      expect(chained).toBeDefined();
+      expect((chained?.[0] as { tools?: unknown[] }).tools).toHaveLength(2);
       const toolMessage = (
-        finalCall?.[0] as {
+        chained?.[0] as {
           messages: { role: string; callId?: string; content: string }[];
         }
       ).messages.find((m) => m.role === 'tool');
@@ -1163,7 +1207,11 @@ describe('Conversation (e2e)', () => {
         .expect(200);
       const sessionId = (first.body as ConversationResponse).sessionId;
 
-      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      // The model keeps searching, so the step bound forces finalization
+      // through resume(); the final call itself goes down.
+      for (let i = 0; i < 6; i++) {
+        chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      }
       chatWithTools.mockRejectedValueOnce(new Error('provider down'));
       const turn = await request(http())
         .post('/core/conversation')

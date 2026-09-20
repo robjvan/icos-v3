@@ -36,6 +36,12 @@ import type {
 } from '../tools/tool-execution.repository';
 import { ToolRegistry } from '../tools/tool-registry';
 import type { ToolName } from '../tools/tool-registry';
+import { AgentRunRepository } from '../agent/agent-run.repository';
+import type {
+  AgentTerminalState,
+  AgentTransientState,
+  RunTermination,
+} from '../agent/agent-run.repository';
 import { buildContext } from './context.builder';
 import { SessionStore } from './session.store';
 import type { HistoryMessage } from './session.store';
@@ -100,6 +106,17 @@ export interface CommandPayload {
 /** Model tag for deterministic command replies (never an LLM reply). */
 const COMMAND_MODEL = 'core';
 
+/** Max tool executions per turn. Each step runs at most one call; approval-gated tools end the chain. */
+export const MAX_TOOL_STEPS = 5;
+
+/**
+ * Steering appended to the system prompt on tool-capable turns. The
+ * ledger accepts exactly one call per step, so fan-out proposals fail
+ * closed — chain sequential single calls instead.
+ */
+export const TOOL_STEP_INSTRUCTION =
+  'You may use tools across multiple steps, but emit at most one tool call per response. When you have enough information, answer in plain text with no tool calls.';
+
 /** Completed ledger pairs injected per turn (newest context, bounded). */
 const MAX_TOOL_PAIRS = 5;
 
@@ -116,6 +133,7 @@ export class ConversationService {
     private readonly skills: SkillService,
     private readonly tools: ToolExecutionService,
     private readonly registry: ToolRegistry,
+    private readonly agentRuns: AgentRunRepository,
     @Inject(CORE_CONFIG) private readonly config: CoreConfig,
   ) {}
 
@@ -135,39 +153,116 @@ export class ConversationService {
     }
     const { id } = await this.sessions.resolve(sessionId);
     const turn = await this.prepareTurn(id, message);
-    const requestId = randomUUID();
-    let proposal: LlmResult;
-    try {
-      proposal = await this.llm.chatWithTools({
-        messages: turn.toolMessages,
-        tools: turn.descriptors,
-        sessionId: id,
-      });
-    } catch (err) {
-      throw this.providerError(err);
-    }
-    let record: ToolExecutionRecord;
-    try {
-      record = await this.tools.consume({
+    // Bounded multi-step loop: each step proposes at most one call.
+    // Approval-free searches chain (pair appended, propose again);
+    // parks, text, and invalid proposals end the turn as before.
+    const runId = this.startRun(id, message);
+    let context = turn.toolMessages;
+    let lastTool: ToolSummary | undefined;
+    let toolSteps = 0;
+    let boundHit = false;
+    for (let step = 0; ; step++) {
+      const requestId = randomUUID();
+      const finalAttempt = step >= MAX_TOOL_STEPS;
+      this.transitionRun(runId, 'reasoning');
+      let proposal: LlmResult;
+      try {
+        proposal = await this.llm.chatWithTools({
+          messages: context,
+          tools: finalAttempt ? [] : turn.descriptors,
+          ...(finalAttempt ? { toolChoice: 'none' as const } : {}),
+          sessionId: id,
+        });
+      } catch (err) {
+        this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps });
+        throw this.providerError(err);
+      }
+      if (proposal.kind === 'tool_calls') {
+        this.transitionRun(runId, 'action_proposed');
+        this.transitionRun(runId, 'executing');
+      }
+      let record: ToolExecutionRecord;
+      try {
+        record = await this.tools.consume(
+          {
+            requestId,
+            sessionId: id,
+            context,
+            allowedTools: turn.allowedTools,
+            proposal,
+          },
+          // Intermediate steps skip the tools-disabled final call; the
+          // loop either continues with the pair or finalizes below.
+          { skipFinal: !finalAttempt },
+        );
+      } catch (err) {
+        this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps });
+        throw this.ledgerError(err);
+      }
+      this.stepRun(
+        runId,
         requestId,
-        sessionId: id,
-        context: turn.toolMessages,
-        allowedTools: turn.allowedTools,
-        proposal,
-      });
-    } catch (err) {
-      throw this.ledgerError(err);
+        proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
+      );
+      const pair = this.continuationPair(record);
+      if (pair) {
+        toolSteps += 1;
+        this.transitionRun(runId, 'observing');
+      }
+      if (pair && !finalAttempt) {
+        lastTool = { invocationId: pair.invocationId, name: pair.name };
+        context = [...context, pair.assistant, pair.tool];
+        continue;
+      }
+      if (pair && finalAttempt) {
+        // Bound reached with another search: finalize this step's durable
+        // result through the standard tools-disabled final call.
+        boundHit = true;
+        try {
+          record = await this.tools.resume(requestId, id);
+        } catch (err) {
+          this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps });
+          throw this.resumeError(err);
+        }
+      }
+      if (record.state !== 'invalid') {
+        this.recordSkillTurn(id, turn.skills);
+      }
+      let outcome: TurnOutcome;
+      try {
+        outcome = await this.renderTurn({
+          sessionId: id,
+          requestId,
+          userText: message,
+          history: turn.history,
+          record,
+        });
+      } catch (err) {
+        this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps });
+        throw err;
+      }
+      if (outcome.status === 'approval_required' && outcome.approval) {
+        this.parkRun(runId, outcome.approval.approvalId);
+      } else if (boundHit) {
+        // The model did not stop on its own: the step bound forced the
+        // answer. Delivered, but truthfully not a clean completion.
+        this.finishRun(runId, 'budget_exhausted', {
+          reason: 'step_bound',
+          toolSteps,
+        });
+      } else {
+        // A delivered response completes the run, including `processing`
+        // (the background tool remains M8-governed; M9l revisits this).
+        this.finishRun(runId, 'completed', {
+          reason: 'final_answer',
+          toolSteps,
+        });
+      }
+      if (outcome.status === 'ok' && !outcome.tool && lastTool) {
+        outcome.tool = lastTool;
+      }
+      return outcome;
     }
-    if (record.state !== 'invalid') {
-      this.recordSkillTurn(id, turn.skills);
-    }
-    return this.renderTurn({
-      sessionId: id,
-      requestId,
-      userText: message,
-      history: turn.history,
-      record,
-    });
   }
 
   /**
@@ -176,21 +271,35 @@ export class ConversationService {
    * Returns the durable outcome without re-executing anything.
    */
   async resumeTurn(requestId: string, sessionId: string): Promise<TurnOutcome> {
+    const runId = this.findRun(sessionId, requestId);
+    this.transitionRun(runId, 'executing');
     let record: ToolExecutionRecord;
     try {
       record = await this.tools.resume(requestId, sessionId);
     } catch (err) {
+      this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps: 0 });
       throw this.resumeError(err);
     }
     const userText = lastUserText(record);
     const history = await this.sessions.getContextMessages(record.sessionId);
-    return this.renderTurn({
-      sessionId: record.sessionId,
-      requestId,
-      userText,
-      history,
-      record,
+    let outcome: TurnOutcome;
+    try {
+      outcome = await this.renderTurn({
+        sessionId: record.sessionId,
+        requestId,
+        userText,
+        history,
+        record,
+      });
+    } catch (err) {
+      this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps: 0 });
+      throw err;
+    }
+    this.finishRun(runId, 'completed', {
+      reason: 'final_answer',
+      toolSteps: 0,
     });
+    return outcome;
   }
 
   async history(sessionId: string): Promise<{
@@ -216,6 +325,7 @@ export class ConversationService {
     emit: (event: ConversationStreamEvent) => void,
     clientSignal?: AbortSignal,
   ): Promise<void> {
+    // console.error(`🚀🚀🚀 FIRING CONVERSATION`);
     // Commands ride the stream as `meta` → `done` with no `token`
     // events: no LLM contact, nothing persisted as conversation.
     if (this.commands.isCommand(message)) {
@@ -264,40 +374,144 @@ export class ConversationService {
         model: this.config.llmModel,
         requestId,
       });
+      // Bounded multi-step loop, mirroring converse(): intermediate
+      // searches emit progress only; exactly one terminal done follows.
+      // Run tracking lives outside the guarded block so stream failures
+      // can still terminate the run truthfully (cancelled vs failed).
+      const runId = this.startRun(id, message);
+      let toolSteps = 0;
+      let boundHit = false;
       try {
-        const proposal = await this.llm.chatStreamWithTools(
-          {
-            messages: turn.toolMessages,
-            tools: turn.descriptors,
-            sessionId: id,
-          },
-          sink,
-          clientSignal,
-        );
-        const record = await this.tools.consume(
-          {
-            requestId,
-            sessionId: id,
-            context: turn.toolMessages,
-            allowedTools: turn.allowedTools,
-            proposal,
-          },
-          { sink, signal: clientSignal },
-        );
-        if (record.state !== 'invalid') {
-          this.recordSkillTurn(id, turn.skills);
+        let context = turn.toolMessages;
+        let currentRequestId = requestId;
+        let lastTool: ToolSummary | undefined;
+        for (let step = 0; ; step++) {
+          const finalAttempt = step >= MAX_TOOL_STEPS;
+          this.transitionRun(runId, 'reasoning');
+          let proposal: LlmResult;
+          try {
+            proposal = await this.llm.chatStreamWithTools(
+              {
+                messages: context,
+                tools: finalAttempt ? [] : turn.descriptors,
+                ...(finalAttempt ? { toolChoice: 'none' as const } : {}),
+                sessionId: id,
+              },
+              sink,
+              clientSignal,
+            );
+          } catch (err) {
+            this.finishRun(runId, 'failed', {
+              reason: 'turn_error',
+              toolSteps,
+            });
+            throw err;
+          }
+          if (proposal.kind === 'tool_calls') {
+            this.transitionRun(runId, 'action_proposed');
+            this.transitionRun(runId, 'executing');
+          }
+          let record: ToolExecutionRecord;
+          try {
+            record = await this.tools.consume(
+              {
+                requestId: currentRequestId,
+                sessionId: id,
+                context,
+                allowedTools: turn.allowedTools,
+                proposal,
+              },
+              { sink, signal: clientSignal, skipFinal: !finalAttempt },
+            );
+          } catch (err) {
+            this.finishRun(runId, 'failed', {
+              reason: 'turn_error',
+              toolSteps,
+            });
+            throw err;
+          }
+          this.stepRun(
+            runId,
+            currentRequestId,
+            proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
+          );
+          const pair = this.continuationPair(record);
+          if (pair) {
+            toolSteps += 1;
+            this.transitionRun(runId, 'observing');
+          }
+          if (pair && !finalAttempt) {
+            lastTool = { invocationId: pair.invocationId, name: pair.name };
+            emit({
+              type: 'tool',
+              invocationId: pair.invocationId,
+              name: pair.name,
+              state: 'succeeded',
+            });
+            context = [...context, pair.assistant, pair.tool];
+            currentRequestId = randomUUID();
+            continue;
+          }
+          if (pair && finalAttempt) {
+            boundHit = true;
+            try {
+              record = await this.tools.resume(currentRequestId, id, {
+                sink,
+                signal: clientSignal,
+              });
+            } catch (err) {
+              this.finishRun(runId, 'failed', {
+                reason: 'turn_error',
+                toolSteps,
+              });
+              throw err;
+            }
+          }
+          if (record.state !== 'invalid') {
+            this.recordSkillTurn(id, turn.skills);
+          }
+          let outcome: TurnOutcome;
+          try {
+            outcome = await this.renderTurn({
+              sessionId: id,
+              requestId: currentRequestId,
+              userText: message,
+              history: turn.history,
+              record,
+            });
+          } catch (err) {
+            this.finishRun(runId, 'failed', {
+              reason: 'turn_error',
+              toolSteps,
+            });
+            throw err;
+          }
+          if (outcome.status === 'approval_required' && outcome.approval) {
+            this.parkRun(runId, outcome.approval.approvalId);
+          } else if (boundHit) {
+            this.finishRun(runId, 'budget_exhausted', {
+              reason: 'step_bound',
+              toolSteps,
+            });
+          } else {
+            this.finishRun(runId, 'completed', {
+              reason: 'final_answer',
+              toolSteps,
+            });
+          }
+          if (outcome.status === 'ok' && !outcome.tool && lastTool) {
+            outcome.tool = lastTool;
+          }
+          this.emitTurn(emit, outcome);
+          return;
         }
-        this.emitTurn(
-          emit,
-          await this.renderTurn({
-            sessionId: id,
-            requestId,
-            userText: message,
-            history: turn.history,
-            record,
-          }),
-        );
       } catch (err) {
+        // A disconnected client cancels the run; anything else fails it.
+        const cancelled = clientSignal?.aborted === true;
+        this.finishRun(runId, cancelled ? 'cancelled' : 'failed', {
+          reason: cancelled ? 'cancelled' : 'turn_error',
+          toolSteps,
+        });
         emit({
           type: 'error',
           message: this.errorMessage(err),
@@ -325,6 +539,8 @@ export class ConversationService {
         requestId,
       });
       try {
+        const runId = this.findRun(sessionId, requestId);
+        this.transitionRun(runId, 'executing');
         const record = await this.tools.resume(requestId, sessionId, {
           sink: { onToken: (content) => emit({ type: 'token', content }) },
           signal: clientSignal,
@@ -333,16 +549,27 @@ export class ConversationService {
         const history = await this.sessions.getContextMessages(
           record.sessionId,
         );
-        this.emitTurn(
-          emit,
-          await this.renderTurn({
+        let outcome: TurnOutcome;
+        try {
+          outcome = await this.renderTurn({
             sessionId: record.sessionId,
             requestId,
             userText,
             history,
             record,
-          }),
-        );
+          });
+        } catch (err) {
+          this.finishRun(runId, 'failed', {
+            reason: 'turn_error',
+            toolSteps: 0,
+          });
+          throw err;
+        }
+        this.finishRun(runId, 'completed', {
+          reason: 'final_answer',
+          toolSteps: 0,
+        });
+        this.emitTurn(emit, outcome);
       } catch (err) {
         emit({
           type: 'error',
@@ -388,6 +615,47 @@ export class ConversationService {
     });
   }
 
+  /**
+   * Continuation for a completed approval-free search step: the
+   * assistant/tool messages to append before proposing again, mirroring
+   * the final-call shape. Anything else (park, text, invalid,
+   * unfinished) ends the turn through the standard render path.
+   */
+  private continuationPair(record: ToolExecutionRecord):
+    | {
+        invocationId: string;
+        name: ToolName;
+        assistant: LlmMessage;
+        tool: LlmMessage;
+      }
+    | undefined {
+    if (
+      (record.state !== 'succeeded' && record.state !== 'failed') ||
+      !record.invocationId ||
+      !record.execution
+    )
+      return undefined;
+    const validation = record.validation;
+    if (!validation.ok || !('request' in validation)) return undefined;
+    if (validation.request.name !== 'session.search') return undefined;
+    const proposal = record.input.proposal;
+    if (proposal.kind !== 'tool_calls') return undefined;
+    return {
+      invocationId: record.invocationId,
+      name: validation.request.name,
+      assistant: {
+        role: 'assistant',
+        content: proposal.content,
+        toolCalls: [{ ...proposal.toolCalls[0], id: record.invocationId }],
+      },
+      tool: {
+        role: 'tool',
+        callId: record.invocationId,
+        content: JSON.stringify(record.execution),
+      },
+    };
+  }
+
   private async prepareTurn(
     sessionId: string,
     message: string,
@@ -412,10 +680,20 @@ export class ConversationService {
     ];
     const descriptors = this.registry.list().slice();
     const allowedTools = descriptors.map((descriptor) => descriptor.name);
+    // Steer one-call-per-step tool use. buildContext leads with the system
+    // message whenever a prompt or catalog exists; otherwise stage one.
+    const [head, ...tail] = toolMessages;
+    const stepped: LlmMessage[] =
+      head?.role === 'system'
+        ? [
+            { ...head, content: `${head.content}\n\n${TOOL_STEP_INSTRUCTION}` },
+            ...tail,
+          ]
+        : [{ role: 'system', content: TOOL_STEP_INSTRUCTION }, ...toolMessages];
     return {
       history,
       skills,
-      toolMessages,
+      toolMessages: stepped,
       descriptors,
       allowedTools,
     };
@@ -679,6 +957,88 @@ export class ConversationService {
 
   private errorMessage(err: unknown): string {
     return err instanceof Error ? err.message : 'Unknown error';
+  }
+
+  /**
+   * M9a run tracking. Best-effort by design: observation must never
+   * fail a conversation turn, so every tracking call is isolated and
+   * failures are logged and dropped.
+   */
+  private startRun(sessionId: string, goal: string): string | undefined {
+    try {
+      return this.agentRuns.createRun({
+        sessionId,
+        goal,
+        limits: { maxToolSteps: MAX_TOOL_STEPS },
+      }).id;
+    } catch (err) {
+      this.trackingFailed(err);
+      return undefined;
+    }
+  }
+
+  private stepRun(
+    runId: string | undefined,
+    requestId: string,
+    toolCalls: number,
+  ): void {
+    if (!runId) return;
+    try {
+      this.agentRuns.recordStep(runId, { requestId, toolCalls });
+    } catch (err) {
+      this.trackingFailed(err);
+    }
+  }
+
+  private parkRun(runId: string | undefined, approvalId: string): void {
+    if (!runId) return;
+    try {
+      this.agentRuns.markParked(runId, approvalId);
+    } catch (err) {
+      this.trackingFailed(err);
+    }
+  }
+
+  private transitionRun(
+    runId: string | undefined,
+    state: AgentTransientState,
+  ): void {
+    if (!runId) return;
+    try {
+      this.agentRuns.transitionRun(runId, state);
+    } catch (err) {
+      this.trackingFailed(err);
+    }
+  }
+
+  private finishRun(
+    runId: string | undefined,
+    state: AgentTerminalState,
+    termination: RunTermination,
+  ): void {
+    if (!runId) return;
+    try {
+      this.agentRuns.markTerminal(runId, state, termination);
+    } catch (err) {
+      this.trackingFailed(err);
+    }
+  }
+
+  private findRun(sessionId: string, requestId: string): string | undefined {
+    try {
+      return this.agentRuns.findByRequest(sessionId, requestId)?.id;
+    } catch (err) {
+      this.trackingFailed(err);
+      return undefined;
+    }
+  }
+
+  private trackingFailed(err: unknown): void {
+    this.logger.warn(
+      `Agent run tracking failed: ${
+        err instanceof Error ? err.message : 'unknown error'
+      }`,
+    );
   }
 
   /**

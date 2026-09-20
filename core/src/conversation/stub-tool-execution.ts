@@ -1,5 +1,6 @@
 import type { StreamSink } from '../llm/llm.client';
 import type { LlmResult, LlmToolRequest } from '../llm/llm.protocol';
+import type { AgentRunRepository } from '../agent/agent-run.repository';
 import type {
   ExecutionPair,
   ToolExecutionInput,
@@ -179,7 +180,6 @@ export function stubToolExecution() {
   } as unknown as ToolExecutionService;
   return { service, consume, resume, recentPairs, claimTranscript };
 }
-
 export function stubToolLlm() {
   const chatWithTools = jest.fn<Promise<LlmResult>, [LlmToolRequest]>(() =>
     Promise.resolve(textProposal()),
@@ -193,4 +193,52 @@ export function stubToolLlm() {
     return Promise.resolve(textProposal());
   });
   return { chatWithTools, chatStreamWithTools };
+}
+
+/** M9a agent-run double: tracking is best-effort, tests assert calls. */
+export function stubAgentRuns() {
+  const createRun = jest.fn(
+    (input: { sessionId: string; goal: string; limits: unknown }) => ({
+      id: 'run-1',
+      sessionId: input.sessionId,
+      goal: input.goal,
+      state: 'created',
+      requestIds: [],
+      currentRequestId: null,
+      iterationCount: 0,
+      toolCallCount: 0,
+      limits: input.limits,
+      approvalId: null,
+      termination: null,
+      createdAt: 't',
+      updatedAt: 't',
+    }),
+  );
+  const recordStep = jest.fn(() => undefined);
+  const markParked = jest.fn(() => undefined);
+  const markTerminal = jest.fn(() => undefined);
+  const transitionRun = jest.fn<void, [string, string]>(() => undefined);
+  const findByRequest = jest.fn<{ id: string } | undefined, [string, string]>(
+    () => undefined,
+  );
+  const get = jest.fn(() => undefined);
+  const service = {
+    createRun,
+    recordStep,
+    markParked,
+    markTerminal,
+    transitionRun,
+    findByRequest,
+    get,
+  } as unknown as AgentRunRepository;
+  return {
+    service,
+    createRun,
+    recordStep,
+    markParked,
+    markTerminal,
+    transitionRun,
+    findByRequest,
+    get,
+  };
 }

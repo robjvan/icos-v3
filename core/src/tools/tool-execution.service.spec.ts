@@ -123,6 +123,25 @@ describe('ToolExecutionService SQLite', () => {
     expect(await sessions.getMessages('s1')).toHaveLength(1);
   });
 
+  it('defers the final call when skipFinal is set, then finalizes on demand', async () => {
+    const { sessions, service } = open();
+    await sessions.createSession('s1');
+    await sessions.appendMessage('s1', { role: 'user', content: 'teal local' });
+
+    const stepped = await service.consume(input(), { skipFinal: true });
+    expect(stepped.state).toBe('succeeded');
+    expect(stepped.execution).toMatchObject({ ok: true });
+    expect(stepped.final.state).toBe('pending');
+    expect(final).not.toHaveBeenCalled();
+
+    const finished = await service.consume(input());
+    expect(finished.final).toEqual({
+      state: 'succeeded',
+      result: { kind: 'text', content: 'Found teal', model: 'test' },
+    });
+    expect(final).toHaveBeenCalledTimes(1);
+  });
+
   it('competing connections cannot rerun an in-flight handler or final attempt', async () => {
     const first = open();
     const second = open();

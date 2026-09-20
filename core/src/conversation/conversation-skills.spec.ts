@@ -15,9 +15,14 @@ import { SKILL_FILE } from '../skills/skill-loader';
 import { SkillService } from '../skills/skill.service';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
+import { TOOL_STEP_INSTRUCTION } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
-import { stubToolExecution, stubToolLlm } from './stub-tool-execution';
+import {
+  stubAgentRuns,
+  stubToolExecution,
+  stubToolLlm,
+} from './stub-tool-execution';
 
 function testConfig(
   skillsDirPath: string,
@@ -109,6 +114,7 @@ async function setup(
     skills,
     stubToolExecution().service,
     new ToolRegistry(),
+    stubAgentRuns().service,
     config,
   );
   return {
@@ -273,11 +279,14 @@ describe('ConversationService skill injection (M7c)', () => {
     expect(await failing.repository.getMessages(id)).toEqual([]);
   });
 
-  it('disabled mode stays byte-identical to pre-M7 context', async () => {
+  it('disabled mode injects no skill content', async () => {
     const { service, chat } = await setup(dir, { skillsEnabled: false });
     await service.converse('hello');
     expect(sentMessages(chat)).toEqual([
-      { role: 'system', content: 'test-system' },
+      {
+        role: 'system',
+        content: `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
+      },
       { role: 'user', content: 'hello' },
     ]);
   });

@@ -347,6 +347,128 @@ describe('openDatabase', () => {
     // Re-open is idempotent.
     openDatabase(path, 'sessions').close();
   });
+
+  it('rebuilds pre-M9b agent_runs, mapping stranded running rows to failed', () => {
+    // Simulate an M9a-era database: provisional lifecycle states only.
+    const path = join(dir, 'm9a.sqlite');
+    const old = new Database(path);
+    try {
+      old.exec(`
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            title TEXT
+        );
+        CREATE TABLE agent_runs (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            goal TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN (
+                'running', 'awaiting_approval', 'completed', 'failed'
+            )),
+            request_ids TEXT NOT NULL DEFAULT '[]',
+            current_request_id TEXT,
+            iteration_count INTEGER NOT NULL DEFAULT 0,
+            tool_call_count INTEGER NOT NULL DEFAULT 0,
+            limits_json TEXT NOT NULL,
+            approval_id TEXT,
+            termination_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+      `);
+      old
+        .prepare(
+          'INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)',
+        )
+        .run('s1', 't', 't');
+      const insert = old.prepare(
+        `INSERT INTO agent_runs
+          (id, session_id, goal, state, request_ids, current_request_id,
+           iteration_count, tool_call_count, limits_json, approval_id,
+           termination_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run(
+        'stranded',
+        's1',
+        'crashed turn',
+        'running',
+        '["req-1"]',
+        'req-1',
+        1,
+        2,
+        '{"maxToolSteps":5}',
+        null,
+        null,
+        't',
+        't',
+      );
+      insert.run(
+        'parked',
+        's1',
+        'rename it',
+        'awaiting_approval',
+        '["req-2"]',
+        'req-2',
+        1,
+        1,
+        '{"maxToolSteps":5}',
+        'appr-1',
+        null,
+        't',
+        't',
+      );
+    } finally {
+      old.close();
+    }
+
+    const db = openDatabase(path, 'sessions');
+    try {
+      const rows = db
+        .prepare(
+          `SELECT id, state, tool_call_count, termination_json
+           FROM agent_runs ORDER BY id`,
+        )
+        .all() as {
+        id: string;
+        state: string;
+        tool_call_count: number;
+        termination_json: string | null;
+      }[];
+      // Stranded provisional rows become failed with their executed count.
+      expect(rows).toEqual([
+        {
+          id: 'parked',
+          state: 'awaiting_approval',
+          tool_call_count: 1,
+          termination_json: null,
+        },
+        {
+          id: 'stranded',
+          state: 'failed',
+          tool_call_count: 2,
+          termination_json: '{"reason":"turn_error","toolSteps":2}',
+        },
+      ]);
+      // The new lifecycle states are accepted now.
+      db.prepare(
+        `UPDATE agent_runs SET state = 'observing' WHERE id = 'parked'`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `UPDATE agent_runs SET state = 'running' WHERE id = 'parked'`,
+          )
+          .run(),
+      ).toThrow();
+    } finally {
+      db.close();
+    }
+    // Re-open is idempotent.
+    openDatabase(path, 'sessions').close();
+  });
 });
 
 describe('migrateLegacyDatabase', () => {

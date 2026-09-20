@@ -164,6 +164,31 @@ BEFORE UPDATE OF request_id, session_id, input_json, invocation_id ON tool_reque
 BEGIN
     SELECT RAISE(ABORT, 'immutable tool request');
 END;
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    goal TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'created', 'reasoning', 'action_proposed', 'executing',
+        'observing', 'awaiting_approval',
+        'completed', 'failed', 'cancelled', 'budget_exhausted'
+    )),
+    request_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(request_ids)),
+    current_request_id TEXT,
+    iteration_count INTEGER NOT NULL DEFAULT 0,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    limits_json TEXT NOT NULL CHECK (json_valid(limits_json)),
+    approval_id TEXT,
+    termination_json TEXT CHECK (
+        termination_json IS NULL OR json_valid(termination_json)
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session
+ON agent_runs(session_id);
 `;
 
 /**
@@ -205,6 +230,36 @@ CREATE TABLE tool_requests (
     CHECK (final_state != 'claimed' OR final_token IS NOT NULL)
 );
 `;
+
+/** Post-M9b `agent_runs` definition: the full lifecycle state set. */
+const AGENT_RUNS_TABLE_SQL = `
+CREATE TABLE agent_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    goal TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'created', 'reasoning', 'action_proposed', 'executing',
+        'observing', 'awaiting_approval',
+        'completed', 'failed', 'cancelled', 'budget_exhausted'
+    )),
+    request_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(request_ids)),
+    current_request_id TEXT,
+    iteration_count INTEGER NOT NULL DEFAULT 0,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    limits_json TEXT NOT NULL CHECK (json_valid(limits_json)),
+    approval_id TEXT,
+    termination_json TEXT CHECK (
+        termination_json IS NULL OR json_valid(termination_json)
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`;
+
+const AGENT_RUNS_COLUMNS =
+  'id, session_id, goal, state, request_ids, current_request_id, ' +
+  'iteration_count, tool_call_count, limits_json, approval_id, ' +
+  'termination_json, created_at, updated_at';
 
 /** Full-column immutability guard converged on by `migrateToolRequests`. */
 const TOOL_REQUESTS_IMMUTABLE_TRIGGER_SQL = `
@@ -276,6 +331,7 @@ const SCHEMAS: Record<
       'clarifications',
       'clarification_events',
       'tool_requests',
+      'agent_runs',
     ],
     triggers: [
       'messages_ai',
@@ -331,6 +387,7 @@ function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
       'INTEGER NOT NULL DEFAULT 0',
     );
     migrateToolRequests(db);
+    migrateAgentRuns(db);
     addColumnIfMissing(
       db,
       'tool_requests',
@@ -381,6 +438,43 @@ function migrateToolRequests(db: Database.Database): void {
     db.exec(`DROP TABLE tool_requests_legacy;`);
   }).immediate();
   ensureToolRequestsTrigger(db);
+}
+
+/**
+ * M9b upgrade for the M9a-era `agent_runs` table: pre-M9b tables only
+ * know the provisional states (`running`, `awaiting_approval`,
+ * `completed`, `failed`), and CHECK constraints cannot be altered in
+ * place. Rebuilds the table preserving every row. Rows stranded in
+ * provisional `running` never reached a terminal state (crash or
+ * pre-lifecycle code), so they are recorded as failed with their
+ * executed tool count; every other state carries over unchanged.
+ * Idempotent: current tables are left alone.
+ */
+function migrateAgentRuns(db: Database.Database): void {
+  const table = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (!table) return;
+  if (table.sql.includes(`'budget_exhausted'`)) return;
+  db.transaction(() => {
+    db.exec(`ALTER TABLE agent_runs RENAME TO agent_runs_legacy;`);
+    db.exec(AGENT_RUNS_TABLE_SQL);
+    db.exec(
+      `INSERT INTO agent_runs (${AGENT_RUNS_COLUMNS})
+       SELECT id, session_id, goal,
+         CASE WHEN state = 'running' THEN 'failed' ELSE state END,
+         request_ids, current_request_id, iteration_count, tool_call_count,
+         limits_json, approval_id,
+         CASE WHEN state = 'running'
+           THEN '{"reason":"turn_error","toolSteps":' || tool_call_count || '}'
+           ELSE termination_json END,
+         created_at, updated_at
+       FROM agent_runs_legacy;`,
+    );
+    db.exec(`DROP TABLE agent_runs_legacy;`);
+  }).immediate();
 }
 
 function ensureToolRequestsTrigger(db: Database.Database): void {

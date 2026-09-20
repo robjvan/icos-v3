@@ -50,7 +50,11 @@ export class ToolExecutionService {
 
   async consume(
     input: ToolExecutionInput,
-    options: { sink?: StreamSink; signal?: AbortSignal } = {},
+    options: {
+      sink?: StreamSink;
+      signal?: AbortSignal;
+      skipFinal?: boolean;
+    } = {},
   ): Promise<ToolExecutionRecord> {
     let snapshot: string;
     let captured: ToolExecutionInput;
@@ -119,6 +123,12 @@ export class ToolExecutionService {
     }
     if (record.state === 'awaiting_approval') {
       return this.resume(record.requestId, record.sessionId, options);
+    }
+    // Multi-step turns skip the tools-disabled final call on intermediate
+    // steps; the driver finalizes the last step via resume(), which runs
+    // the same guarded maybeFinal exactly once.
+    if (options.skipFinal) {
+      return this.required(record.requestId);
     }
     return this.maybeFinal(record.requestId, options);
   }
