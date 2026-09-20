@@ -429,6 +429,11 @@
       const approvals = document.getElementById('approvals');
       const questions = document.getElementById('questions');
 
+      // Parked tool turns: approvalId -> { requestId, sessionId }. Filled
+      // when a stream ends in `approval_required`; consumed when that
+      // approval resolves, so the turn resumes exactly once.
+      const pendingResumes = new Map();
+
       function shortId(id) {
         return id.slice(0, 8);
       }
@@ -604,6 +609,16 @@
         }
 
         await refreshApprovals();
+
+        // A resolved tool approval unparks its turn. Resume works for
+        // approve and reject alike (reject renders the parked turn's
+        // mirror notice); unknown ids mean no parked turn exists.
+        const parked = pendingResumes.get(id);
+
+        if (parked) {
+          pendingResumes.delete(id);
+          await resumeTurn(parked.requestId, parked.sessionId);
+        }
       }
 
       async function refreshQuestions() {
@@ -842,10 +857,57 @@
         }
       }
 
-      async function readStream(body, bubble) {
+      // Finish a parked (`approval_required`) or still-running
+      // (`processing`) tool turn through the durable resume endpoint.
+      // Never re-executes: the stored record answers. `attempt` bounds
+      // chained `processing` polls across streams.
+      async function resumeTurn(requestId, resumeSessionId, attempt = 0) {
+        const bubble = addMessage('assistant', 'Resuming...');
+        bubble.classList.add('typing');
+
+        try {
+          const response = await fetch('/core/conversation/resume-stream', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              requestId,
+              sessionId: resumeSessionId,
+            }),
+          });
+
+          if (!response.ok || !response.body) {
+            let detail = `HTTP ${response.status}`;
+
+            try {
+              const data = await response.json();
+              detail = data.message || detail;
+            } catch {
+              // Non-JSON error body; keep the status text.
+            }
+
+            throw new Error(detail);
+          }
+
+          await readStream(response.body, bubble, attempt);
+        } catch (error) {
+          bubble.remove();
+
+          addMessage('system', `Error: ${error.message}`);
+          return;
+        }
+
+        // Resume can rename the session, so refresh like a fresh turn.
+        await refreshSessions();
+        await refreshApprovals();
+        await refreshQuestions();
+      }
+
+      async function readStream(body, bubble, firstResume = 0) {
         const reader = body.getReader();
         const decoder = new TextDecoder();
-        const state = { started: false };
+        const state = { started: false, resumes: firstResume };
 
         let buffer = '';
 
@@ -903,7 +965,17 @@
           messages.scrollTop = messages.scrollHeight;
         }
 
-        if (name === 'done' && !bubble.textContent) {
+        if (name === 'tool' && !state.started) {
+          // Mid-turn progress. Streamed tokens always win once they arrive.
+          bubble.textContent = `Running tool ${payload.name}...`;
+        }
+
+        if (name === 'approval') {
+          // Surface the approval card early; the turn still ends in `done`.
+          void refreshApprovals();
+        }
+
+        if (name === 'done' && !state.started) {
           bubble.classList.remove('typing');
           bubble.textContent = payload.reply;
         }
@@ -916,6 +988,36 @@
 
           if (payload.command.kind === 'session') {
             messages.replaceChildren(bubble);
+          }
+        }
+
+        // Tool turns. A parked approval remembers its durable request so
+        // the approvals panel can resume it; a finished tool leaves a
+        // trace line; a still-running tool is polled a bounded number of
+        // times through the durable resume endpoint (never re-executed).
+        if (name === 'done' && !payload.command) {
+          if (payload.status === 'approval_required' && payload.approval) {
+            bubble.className = 'message system';
+            pendingResumes.set(payload.approval.approvalId, {
+              requestId: payload.requestId,
+              sessionId,
+            });
+          } else if (payload.status === 'processing') {
+            if (state.resumes < 10) {
+              setTimeout(
+                () =>
+                  void resumeTurn(
+                    payload.requestId,
+                    sessionId,
+                    state.resumes + 1,
+                  ),
+                1000,
+              );
+            } else {
+              bubble.textContent += ' (still running — send a message to retry)';
+            }
+          } else if (payload.tool) {
+            addMessage('system', `Tool ran: ${payload.tool.name}`);
           }
         }
 
