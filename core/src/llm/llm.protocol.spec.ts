@@ -735,6 +735,60 @@ describe('M8b tool protocol', () => {
     ).toMatchObject({ kind: 'tool_calls' });
   });
 
+  it('accepts gateway usage echoes of the terminal choice', async () => {
+    // OpenRouter appends a usage chunk repeating the terminal delta.
+    const echo = (finishReason: string) =>
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            index: 0,
+            delta: { content: '', role: 'assistant' },
+            finish_reason: finishReason,
+          },
+        ],
+        usage: { total_tokens: 2 },
+      })}\n\n`;
+    stream(event({ content: 'Hi' }) + event({}, 'stop') + echo('stop') + done);
+    const onToken = jest.fn();
+    expect(await client().chatStreamWithTools(request, { onToken })).toEqual({
+      kind: 'text',
+      content: 'Hi',
+      model: 'muse-test',
+    });
+    expect(onToken.mock.calls).toEqual([['Hi']]);
+    stream(streamText.replace(done, echo('tool_calls') + done));
+    expect(
+      await client().chatStreamWithTools(request, { onToken: jest.fn() }),
+    ).toMatchObject({ kind: 'tool_calls' });
+  });
+
+  it('still rejects post-finish echoes that add payload', async () => {
+    const echo = (delta: unknown, finishReason: unknown) =>
+      `data: ${JSON.stringify({
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+        usage: { total_tokens: 2 },
+      })}\n\n`;
+    for (const text of [
+      event({ content: 'Hi' }) +
+        event({}, 'stop') +
+        echo({ content: 'again' }, 'stop') +
+        done,
+      event({ content: 'Hi' }) +
+        event({}, 'stop') +
+        echo({ content: '' }, 'length') +
+        done,
+      streamText.replace(
+        done,
+        echo({ tool_calls: [first()] }, 'tool_calls') + done,
+      ),
+    ]) {
+      stream(text);
+      await rejected(
+        client().chatStreamWithTools(request, { onToken: jest.fn() }),
+      );
+    }
+  });
+
   it.each(['abort', 'timeout'])(
     'cancels a non-stream response body on %s',
     async (mode) => {

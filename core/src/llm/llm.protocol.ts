@@ -208,7 +208,13 @@ export class CompletionParser {
     this.readModel(data);
     const choice = this.choice(data, true);
     if (!choice) return;
-    if (this.finish !== null || this.done) throw protocolError();
+    if (this.finish !== null || this.done) {
+      // Some gateways (OpenRouter) append a usage chunk that echoes the
+      // terminal choice. Accept it only when it adds nothing new —
+      // anything else after finish still contradicts the result.
+      if (this.isTerminalEcho(choice)) return;
+      throw protocolError();
+    }
     const delta = record(choice.delta);
     this.message(delta, true);
     this.finishReason(choice.finish_reason);
@@ -218,6 +224,32 @@ export class CompletionParser {
 
   markDone(): void {
     this.done = true;
+  }
+
+  /**
+   * A post-finish choice echo adds no content, calls, or new finish —
+   * e.g. OpenRouter's usage chunk repeating the terminal delta. Unknown
+   * extra fields (reasoning traces, provider metadata) are ignored here
+   * exactly as they are mid-stream; only new payload contradicts.
+   */
+  private isTerminalEcho(choice: Record<string, unknown>): boolean {
+    const finish = choice.finish_reason;
+    if (finish !== undefined && finish !== null && finish !== this.finish)
+      return false;
+    const delta = choice.delta;
+    if (typeof delta !== 'object' || delta === null || Array.isArray(delta))
+      return false;
+    const record = delta as Record<string, unknown>;
+    if (record.role !== undefined && record.role !== 'assistant') return false;
+    if (
+      record.content !== undefined &&
+      record.content !== null &&
+      record.content !== ''
+    )
+      return false;
+    if (record.tool_calls !== undefined) return false;
+    if (record.function_call !== undefined) return false;
+    return true;
   }
 
   result(stream: boolean): LlmResult {
