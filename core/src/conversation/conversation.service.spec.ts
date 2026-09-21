@@ -830,7 +830,7 @@ describe('ConversationService', () => {
           searchProposal().toolCalls[0],
         ],
       };
-      const { service, extract, tools } = setup(
+      const { service, extract, tools, chatWithTools } = setup(
         testConfig(),
         () => Promise.resolve(fanOut),
         undefined,
@@ -841,8 +841,10 @@ describe('ConversationService', () => {
       await expect(service.converse('find everything')).rejects.toBeInstanceOf(
         BadGatewayException,
       );
-      // The rejection happened on the first step: one proposal, one consume.
-      expect(tools.consume).toHaveBeenCalledTimes(1);
+      // Recovery retried every round up to the bound, then failed closed:
+      // six proposals, six consumes, zero executions.
+      expect(chatWithTools).toHaveBeenCalledTimes(MAX_TOOL_STEPS + 1);
+      expect(tools.consume).toHaveBeenCalledTimes(MAX_TOOL_STEPS + 1);
       await flushMicrotasks();
       expect(extract).not.toHaveBeenCalled();
     });
@@ -1125,6 +1127,56 @@ describe('ConversationService', () => {
       ]);
     });
 
+    it('recovers from invalid proposals inside resume continuation', async () => {
+      let proposals = 0;
+      const { service, agentRuns, tools } = setup(
+        testConfig(),
+        () =>
+          Promise.resolve(
+            proposals++ === 0
+              ? {
+                  ...searchProposal(),
+                  toolCalls: [
+                    {
+                      ...searchProposal().toolCalls[0],
+                      rawArguments: '{"query":"","limit":20}',
+                      args: { query: '', limit: 20 },
+                    },
+                  ],
+                }
+              : textProposal('renamed and reported'),
+          ),
+        undefined,
+        undefined,
+        (input) => {
+          if (input.proposal.kind === 'text') {
+            return Promise.resolve(closedTextRecord(input));
+          }
+          const call = input.proposal.toolCalls[0];
+          if (!call || (call.args as { query?: unknown }).query === '') {
+            return Promise.resolve(invalidRecord(input, 'invalid_args'));
+          }
+          return Promise.resolve(searchRecord(input, 'teal found'));
+        },
+      );
+      agentRuns.findByRequest.mockReturnValue(testRun());
+      tools.resume.mockImplementation(() => Promise.resolve(approvedRename()));
+
+      const result = await service.resumeTurn('req-1', 's-1');
+
+      // Invalid step recovered, then the text answer completed the run.
+      expect(result.status).toBe('ok');
+      expect(result.reply).toBe('renamed and reported');
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-9',
+        'completed',
+        {
+          reason: 'final_answer',
+          toolSteps: 1,
+        },
+      );
+    });
+
     it('reconsiders after a rejection instead of dying on the notice', async () => {
       const { service, repository, agentRuns, tools } = setup(
         testConfig(),
@@ -1220,6 +1272,106 @@ describe('ConversationService', () => {
         reply: 'searched after rename',
         status: 'ok',
       });
+    });
+  });
+
+  describe('invalid proposal recovery', () => {
+    function badArgsProposal() {
+      const call = searchProposal().toolCalls[0];
+      return {
+        ...searchProposal(),
+        toolCalls: [
+          {
+            ...call,
+            rawArguments: '{"query":"teal","limit":9999}',
+            args: { query: 'teal', limit: 9999 },
+          },
+        ],
+      };
+    }
+
+    it('recovers from a rejected call with corrected arguments', async () => {
+      let proposals = 0;
+      const { service, repository, chatWithTools } = setup(
+        testConfig(),
+        () =>
+          Promise.resolve(
+            proposals++ === 0 ? badArgsProposal() : textProposal('found it'),
+          ),
+        undefined,
+        undefined,
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : invalidRecord(input, 'invalid_args'),
+          ),
+      );
+
+      const result = await service.converse('find teal');
+
+      expect(result.status).toBe('ok');
+      expect(result.reply).toBe('found it');
+      // The second proposal saw the validation failure as a tool error.
+      expect(chatWithTools).toHaveBeenCalledTimes(2);
+      const second = chatWithTools.mock.calls[1][0];
+      const errors = second.messages.filter(
+        (message) => message.role === 'tool',
+      );
+      expect(errors).toHaveLength(1);
+      expect(JSON.parse(String(errors[0].content))).toMatchObject({
+        ok: false,
+        failure: { code: 'invalid_args' },
+      });
+      expect(await repository.getMessages(result.sessionId)).toEqual([
+        { role: 'user', content: 'find teal' },
+        { role: 'assistant', content: 'found it' },
+      ]);
+    });
+
+    it('recovers from a fan-out with sequential single calls', async () => {
+      const fanOut = {
+        ...searchProposal(),
+        toolCalls: [
+          searchProposal().toolCalls[0],
+          searchProposal().toolCalls[0],
+        ],
+      };
+      const calls: string[] = [];
+      const { service, chatWithTools } = setup(
+        testConfig(),
+        () => {
+          calls.push('propose');
+          if (calls.length === 1) return Promise.resolve(fanOut);
+          if (calls.length === 2) return Promise.resolve(searchProposal());
+          return Promise.resolve(textProposal('both searched'));
+        },
+        undefined,
+        undefined,
+        (input) => {
+          if (input.proposal.kind === 'text') {
+            return Promise.resolve(closedTextRecord(input));
+          }
+          const proposed = input.proposal.toolCalls;
+          if (proposed.length !== 1) {
+            return Promise.resolve(invalidRecord(input, 'invalid_call_count'));
+          }
+          return Promise.resolve(searchRecord(input, 'teal found'));
+        },
+      );
+
+      const result = await service.converse('find everything');
+
+      // Fan-out rejected, then a sequential search, then an answer —
+      // the exact production incident, recovered instead of 502ing.
+      expect(result.status).toBe('ok');
+      expect(result.reply).toBe('both searched');
+      expect(chatWithTools).toHaveBeenCalledTimes(3);
+      const second = chatWithTools.mock.calls[1][0];
+      const echoes = second.messages.filter(
+        (message) => message.role === 'tool',
+      );
+      expect(echoes).toHaveLength(2);
     });
   });
 

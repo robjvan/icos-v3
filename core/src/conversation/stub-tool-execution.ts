@@ -5,6 +5,7 @@ import type {
   ExecutionPair,
   ToolExecutionInput,
   ToolExecutionRecord,
+  ValidationOutcome,
 } from '../tools/tool-execution.repository';
 import type { ToolExecutionService } from '../tools/tool-execution.service';
 
@@ -136,7 +137,15 @@ export function pendingRenameRecord(
   };
 }
 
-export function invalidRecord(input: ToolExecutionInput): ToolExecutionRecord {
+export type InvalidFailureCode = Extract<
+  ValidationOutcome,
+  { ok: false }
+>['failure']['code'];
+
+export function invalidRecord(
+  input: ToolExecutionInput,
+  code: InvalidFailureCode = 'unknown_tool',
+): ToolExecutionRecord {
   return {
     requestId: input.requestId,
     sessionId: input.sessionId,
@@ -144,7 +153,7 @@ export function invalidRecord(input: ToolExecutionInput): ToolExecutionRecord {
     invocationId: 'inv-bad-1',
     approvalId: null,
     state: 'invalid',
-    validation: { ok: false, failure: { code: 'unknown_tool' } },
+    validation: { ok: false, failure: { code } },
     execution: null,
     final: { state: 'not_required' },
     executionToken: null,

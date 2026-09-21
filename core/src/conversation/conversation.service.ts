@@ -270,6 +270,13 @@ export class ConversationService {
         requestId,
         proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
       );
+      // M9i recovery: a rejected proposal feeds its validation failure
+      // back so the model can correct its arguments within budget.
+      const rejection = this.validationFailurePair(record);
+      if (rejection && !finalAttempt) {
+        context = [...context, rejection.assistant, ...rejection.tools];
+        continue;
+      }
       const pair = this.continuationPair(record);
       if (pair) {
         toolSteps += 1;
@@ -474,6 +481,13 @@ export class ConversationService {
         stepRequestId,
         proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
       );
+      // M9i recovery: a rejected proposal feeds its validation failure
+      // back so the model can correct its arguments within budget.
+      const rejection = this.validationFailurePair(stepRecord);
+      if (rejection && !finalAttempt) {
+        context = [...context, rejection.assistant, ...rejection.tools];
+        continue;
+      }
       const pair = this.continuationPair(stepRecord);
       let boundHit = false;
       let deadlineHit = false;
@@ -681,6 +695,13 @@ export class ConversationService {
             currentRequestId,
             proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
           );
+          // M9i recovery: a rejected proposal feeds its validation
+          // failure back so the model can correct within budget.
+          const rejection = this.validationFailurePair(record);
+          if (rejection && !finalAttempt) {
+            context = [...context, rejection.assistant, ...rejection.tools];
+            continue;
+          }
           const pair = this.continuationPair(record);
           if (pair) {
             toolSteps += 1;
@@ -946,6 +967,13 @@ export class ConversationService {
             stepRequestId,
             proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
           );
+          // M9i recovery: a rejected proposal feeds its validation
+          // failure back so the model can correct within budget.
+          const rejection = this.validationFailurePair(stepRecord);
+          if (rejection && !finalAttempt) {
+            context = [...context, rejection.assistant, ...rejection.tools];
+            continue;
+          }
           const pair = this.continuationPair(stepRecord);
           let boundHit = false;
           let deadlineHit = false;
@@ -1108,6 +1136,38 @@ export class ConversationService {
         callId: observation.invocationId,
         content: JSON.stringify(observation.result),
       },
+    };
+  }
+
+  /**
+   * M9i recovery pair for a rejected proposal: the model's raw calls
+   * with one error response each, so it can correct its arguments and
+   * try again within budget. Nothing executed, nothing persisted as an
+   * invocation — the failure payload is the ledger's own verdict.
+   * Undefined unless the record is an invalid tool-call proposal.
+   */
+  private validationFailurePair(
+    record: ToolExecutionRecord,
+  ): { assistant: LlmMessage; tools: LlmMessage[] } | undefined {
+    if (record.state !== 'invalid') return undefined;
+    const proposal = record.input.proposal;
+    if (proposal.kind !== 'tool_calls' || proposal.toolCalls.length === 0) {
+      return undefined;
+    }
+    const failure = !record.validation.ok
+      ? record.validation.failure
+      : { code: 'invalid_proposal' };
+    return {
+      assistant: {
+        role: 'assistant',
+        content: proposal.content,
+        toolCalls: proposal.toolCalls.map((call) => ({ ...call })),
+      },
+      tools: proposal.toolCalls.map((call): LlmMessage => ({
+        role: 'tool',
+        callId: call.id,
+        content: JSON.stringify({ ok: false, failure }),
+      })),
     };
   }
 

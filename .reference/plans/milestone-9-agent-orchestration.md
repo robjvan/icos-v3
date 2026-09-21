@@ -468,7 +468,15 @@ Approval authorizes the specific M8 invocation, not the general goal.
 
 ---
 
-# [ ] M9i — Failure and Recovery
+# [x] M9i — Failure and Recovery (implemented September 21, 2026)
+
+Implemented as validation-failure feedback: rejected proposals
+return to the model as its raw calls plus one error response each
+(the ledger's verdict), and all four loops continue within budget;
+bound exhaustion still fails closed with zero executions. Executed
+failures and unknown outcomes already flowed as themselves (M9d);
+rejections already reconsidered (M9h). Evidence:
+`milestone-9i-evidence-failure-recovery.md`.
 
 M9 must distinguish between:
 

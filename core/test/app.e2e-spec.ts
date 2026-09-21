@@ -1219,6 +1219,46 @@ describe('Conversation (e2e)', () => {
       ).toEqual(['teal local', 'mock reply', 'find teal', 'teal is local']);
     });
 
+    it('recovers from a rejected proposal with corrected arguments', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      // Blank queries fail validation; the model sees the failure and
+      // corrects within the same turn instead of 502ing.
+      chatWithTools.mockResolvedValueOnce({
+        kind: 'tool_calls',
+        content: null,
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'model-call-1',
+            name: 'session.search',
+            version: 1,
+            rawArguments: '{"query":"","limit":20}',
+            args: { query: '', limit: 20 },
+          },
+        ],
+      });
+      chatWithTools.mockResolvedValueOnce(finalText('recovered answer'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      expect((turn.body as ConversationResponse).reply).toBe(
+        'recovered answer',
+      );
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply', 'find teal', 'recovered answer']);
+    });
+
     it('delivers the persisted result when the final response failed', async () => {
       const first = await request(http())
         .post('/core/conversation')
