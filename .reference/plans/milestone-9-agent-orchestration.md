@@ -287,13 +287,18 @@ Do not silently convert execution failures into empty or successful observations
 
 ---
 
-# [ ] M9e — Iterative Execution
+# [x] M9e — Iterative Execution (implemented September 20, 2026)
 
-> Status (September 19, 2026): the loop mechanics below are implemented
-> and verified, but M9a–M9d are still open — there is no persisted run
-> record, no lifecycle states, and no persisted termination. What exists
-> is tool chaining inside a conversation turn, not an agent run yet, so
-> this slice is not claimed.
+The September 19 loop mechanics are claimed now that the foundations
+landed: each step runs through M8 `consume` against the run record
+(M9a), walks lifecycle transitions (M9b) with a planning frame (M9c),
+and continues from invocation-linked observations (M9d). Bound
+(`MAX_TOOL_STEPS`, forced text, `budget_exhausted`), sequential-only
+(fan-out fails closed), approval-gated tools end the chain, resume
+never re-executes. The loop lives in `ConversationService` rather
+than a separate controller — sufficient for turn-scoped runs;
+revisit if runs outgrow a turn. Evidence:
+`milestone-9e-evidence-multistep.md` plus the M9a–M9d evidence.
 
 Implemented as a bounded multi-step loop in `ConversationService`
 (`converse`/`converseStream`) over the unchanged M8 substrate: each step
