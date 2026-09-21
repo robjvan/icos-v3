@@ -17,8 +17,28 @@ describe('loadConfig', () => {
       llmModel: 'llama3.1',
       llmTimeoutMs: 60000,
       maxHistory: 50,
+      agentMaxIterations: 5,
+      agentMaxToolSteps: 5,
+      agentMaxTurnDurationMs: 900000,
     });
     expect(config.llmApiKey).toBeUndefined();
+  });
+
+  it('parses agent budget overrides and rejects non-positive values', () => {
+    const config = loadConfig({
+      LLM_MODEL: 'm',
+      AGENT_MAX_ITERATIONS: '3',
+      AGENT_MAX_TOOL_STEPS: '2',
+      AGENT_MAX_TURN_DURATION_MS: '60000',
+    });
+    expect(config).toMatchObject({
+      agentMaxIterations: 3,
+      agentMaxToolSteps: 2,
+      agentMaxTurnDurationMs: 60000,
+    });
+    expect(() =>
+      loadConfig({ LLM_MODEL: 'm', AGENT_MAX_TOOL_STEPS: '0' }),
+    ).toThrow(/AGENT_MAX_TOOL_STEPS/);
   });
 
   it('strips trailing slashes from the base URL', () => {

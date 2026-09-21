@@ -11,6 +11,7 @@ export function buildPlanningBlock(input: {
   goal: string;
   tools: readonly ToolDescriptor[];
   maxToolSteps: number;
+  maxIterations: number;
 }): string {
   const lines = input.tools.map((tool) =>
     tool.approval === 'none'
@@ -22,7 +23,7 @@ export function buildPlanningBlock(input: {
     `Goal for this turn: ${input.goal.trim()}`,
     'Tools:',
     ...lines,
-    `Budget: at most ${input.maxToolSteps} tool steps this turn; use tool results to decide each next step.`,
+    `Budget: at most ${input.maxToolSteps} tool steps across ${input.maxIterations} proposal rounds this turn; use tool results to decide each next step.`,
     '</assignment>',
   ].join('\n');
 }

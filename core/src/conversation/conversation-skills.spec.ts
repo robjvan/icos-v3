@@ -15,7 +15,12 @@ import { SKILL_FILE } from '../skills/skill-loader';
 import { SkillService } from '../skills/skill.service';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
-import { MAX_TOOL_STEPS, TOOL_STEP_INSTRUCTION } from './conversation.service';
+import {
+  MAX_ITERATIONS,
+  MAX_TOOL_STEPS,
+  MAX_TURN_DURATION_MS,
+  TOOL_STEP_INSTRUCTION,
+} from './conversation.service';
 import { buildPlanningBlock } from '../agent/planning-context';
 import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
@@ -52,6 +57,9 @@ function testConfig(
     skillsMaxActivePerSession: 5,
     skillsMaxAutoLoadedPerTurn: 2,
     skillsMaxContextChars: 8000,
+    agentMaxIterations: MAX_ITERATIONS,
+    agentMaxToolSteps: MAX_TOOL_STEPS,
+    agentMaxTurnDurationMs: MAX_TURN_DURATION_MS,
     ...overrides,
   };
 }
@@ -291,6 +299,7 @@ describe('ConversationService skill injection (M7c)', () => {
             goal: 'hello',
             tools: new ToolRegistry().list(),
             maxToolSteps: MAX_TOOL_STEPS,
+            maxIterations: MAX_ITERATIONS,
           },
         )}`,
       },

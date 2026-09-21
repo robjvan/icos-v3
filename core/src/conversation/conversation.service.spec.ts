@@ -19,10 +19,20 @@ import { CommandDispatcher } from '../commands/command-dispatcher';
 import { DisplayPreferenceStore } from '../commands/display-preferences';
 import { HostHealthProvider } from '../commands/host-health';
 import { SkillService } from '../skills/skill.service';
-import type { ToolExecutionInput } from '../tools/tool-execution.repository';
+import type {
+  ToolExecutionInput,
+  ToolExecutionRecord,
+} from '../tools/tool-execution.repository';
+import type { AgentRun } from '../agent/agent-run.repository';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
-import { MAX_TOOL_STEPS, TOOL_STEP_INSTRUCTION } from './conversation.service';
+import {
+  MAX_ITERATIONS,
+  MAX_TOOL_STEPS,
+  MAX_TURN_DURATION_MS,
+  TOOL_STEP_INSTRUCTION,
+  turnDeadlineExceeded,
+} from './conversation.service';
 import { buildPlanningBlock } from '../agent/planning-context';
 import type { ConversationStreamEvent } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
@@ -65,6 +75,9 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
     skillsMaxActivePerSession: 5,
     skillsMaxAutoLoadedPerTurn: 2,
     skillsMaxContextChars: 8000,
+    agentMaxIterations: MAX_ITERATIONS,
+    agentMaxToolSteps: MAX_TOOL_STEPS,
+    agentMaxTurnDurationMs: MAX_TURN_DURATION_MS,
     ...overrides,
   };
 }
@@ -79,6 +92,7 @@ function planningBlock(goal: string): string {
     goal,
     tools: new ToolRegistry().list(),
     maxToolSteps: MAX_TOOL_STEPS,
+    maxIterations: MAX_ITERATIONS,
   });
 }
 
@@ -435,7 +449,7 @@ describe('ConversationService', () => {
     });
 
     it('persists mirrored rejections as system notices without extraction', async () => {
-      const { service, repository, extract } = setup(
+      const { service, repository, extract, agentRuns } = setup(
         testConfig(),
         () => Promise.resolve(renameProposal()),
         undefined,
@@ -449,6 +463,15 @@ describe('ConversationService', () => {
       expect(result.status).toBe('ok');
       expect(result.outcome).toBe('rejected');
       expect(result.reply).toContain('rejected');
+      // Denied goals end delivered-but-blocked, not cleanly completed.
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'completed',
+        {
+          reason: 'approval_denied',
+          toolSteps: 0,
+        },
+      );
       expect(await repository.getMessages(result.sessionId)).toEqual([
         { role: 'user', content: 'call it Ward' },
         { role: 'assistant', content: result.reply },
@@ -689,6 +712,116 @@ describe('ConversationService', () => {
       expect(result.reply).toBe('gave up');
     });
 
+    it('forces a text answer and a time terminal past the deadline', async () => {
+      const start = 1_000_000;
+      let now = start;
+      const dateSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      try {
+        let lastInput: ToolExecutionInput | undefined;
+        const { service, agentRuns, tools } = setup(
+          testConfig(),
+          () => Promise.resolve(searchProposal()),
+          undefined,
+          undefined,
+          (input) => {
+            lastInput = input;
+            // The clock jumps past the deadline after the first step.
+            now = start + MAX_TURN_DURATION_MS + 1;
+            return Promise.resolve(searchRecord(input, 'teal found'));
+          },
+        );
+        tools.resume.mockImplementation(() =>
+          Promise.resolve(
+            searchRecord(lastInput as ToolExecutionInput, 'late answer'),
+          ),
+        );
+
+        const result = await service.converse('find teal');
+
+        expect(result.status).toBe('ok');
+        expect(result.reply).toBe('late answer');
+        expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+          'run-1',
+          'budget_exhausted',
+          {
+            reason: 'time_budget',
+            toolSteps: 2,
+          },
+        );
+      } finally {
+        dateSpy.mockRestore();
+      }
+    });
+
+    it('enforces the iteration budget independently of tool count', async () => {
+      let lastInput: ToolExecutionInput | undefined;
+      const { service, agentRuns, tools, chatWithTools } = setup(
+        testConfig({ agentMaxIterations: 2, agentMaxToolSteps: 5 }),
+        () => Promise.resolve(searchProposal()),
+        undefined,
+        undefined,
+        (input) => {
+          lastInput = input;
+          return Promise.resolve(searchRecord(input, 'teal found'));
+        },
+      );
+      tools.resume.mockImplementation(() =>
+        Promise.resolve(
+          searchRecord(lastInput as ToolExecutionInput, 'forced done'),
+        ),
+      );
+
+      const result = await service.converse('find teal');
+
+      // Two normal rounds, then the iteration bound forces text.
+      expect(chatWithTools).toHaveBeenCalledTimes(3);
+      const forced = chatWithTools.mock.calls[2][0];
+      expect(forced.tools).toEqual([]);
+      expect(forced.toolChoice).toBe('none');
+      expect(result.reply).toBe('forced done');
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'budget_exhausted',
+        {
+          reason: 'step_bound',
+          toolSteps: 3,
+        },
+      );
+    });
+
+    it('enforces the tool-call budget independently of rounds', async () => {
+      let lastInput: ToolExecutionInput | undefined;
+      const { service, agentRuns, tools, chatWithTools } = setup(
+        testConfig({ agentMaxIterations: 10, agentMaxToolSteps: 2 }),
+        () => Promise.resolve(searchProposal()),
+        undefined,
+        undefined,
+        (input) => {
+          lastInput = input;
+          return Promise.resolve(searchRecord(input, 'teal found'));
+        },
+      );
+      tools.resume.mockImplementation(() =>
+        Promise.resolve(
+          searchRecord(lastInput as ToolExecutionInput, 'forced done'),
+        ),
+      );
+
+      const result = await service.converse('find teal');
+
+      // Two executions, then the tool budget forces text on round three.
+      expect(chatWithTools).toHaveBeenCalledTimes(3);
+      expect(result.reply).toBe('forced done');
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-1',
+        'budget_exhausted',
+        {
+          reason: 'step_bound',
+          toolSteps: 3,
+        },
+      );
+    });
+
     it('still rejects fan-out proposals without executing anything', async () => {
       const fanOut = {
         ...searchProposal(),
@@ -746,6 +879,16 @@ describe('ConversationService', () => {
   });
 
   describe('agent runs', () => {
+    it('bounds turn duration with a pure deadline check', () => {
+      const start = 1_000_000;
+      expect(turnDeadlineExceeded(start, start)).toBe(false);
+      expect(turnDeadlineExceeded(start, start + MAX_TURN_DURATION_MS)).toBe(
+        false,
+      );
+      expect(
+        turnDeadlineExceeded(start, start + MAX_TURN_DURATION_MS + 1),
+      ).toBe(true);
+    });
     it('records steps and terminal state for a text turn', async () => {
       const { service, agentRuns } = setup();
 
@@ -754,7 +897,11 @@ describe('ConversationService', () => {
       expect(agentRuns.createRun).toHaveBeenCalledWith({
         sessionId: result.sessionId,
         goal: 'hello',
-        limits: { maxToolSteps: MAX_TOOL_STEPS },
+        limits: {
+          maxIterations: MAX_ITERATIONS,
+          maxToolSteps: MAX_TOOL_STEPS,
+          maxTurnDurationMs: MAX_TURN_DURATION_MS,
+        },
       });
       expect(agentRuns.transitionRun).toHaveBeenCalledWith(
         'run-1',
@@ -893,6 +1040,186 @@ describe('ConversationService', () => {
         { role: 'user', content: 'hello' },
         { role: 'assistant', content: 'hi back' },
       ]);
+    });
+  });
+
+  describe('resume continuation', () => {
+    function testRun(overrides: Partial<AgentRun> = {}): AgentRun {
+      return {
+        id: 'run-9',
+        sessionId: 's-1',
+        goal: 'rename it',
+        state: 'awaiting_approval',
+        requestIds: ['req-0'],
+        currentRequestId: 'req-0',
+        iterationCount: 1,
+        toolCallCount: 1,
+        limits: {
+          maxIterations: MAX_ITERATIONS,
+          maxToolSteps: MAX_TOOL_STEPS,
+          maxTurnDurationMs: MAX_TURN_DURATION_MS,
+        },
+        approvalId: 'appr-1',
+        termination: null,
+        createdAt: 't',
+        updatedAt: 't',
+        ...overrides,
+      };
+    }
+
+    function renameInput(requestId: string): ToolExecutionInput {
+      return {
+        requestId,
+        sessionId: 's-1',
+        context: [{ role: 'user', content: 'rename it' }],
+        allowedTools: ['session.search', 'session.rename'],
+        proposal: renameProposal(),
+      };
+    }
+
+    function approvedRename(): ToolExecutionRecord {
+      return {
+        ...pendingRenameRecord(renameInput('req-1')),
+        state: 'succeeded',
+        execution: { ok: true, renamed: { sessionId: 's-1', title: 'Ward' } },
+        final: { state: 'pending' },
+      };
+    }
+
+    it('plans again after an approved rename instead of ending', async () => {
+      const { service, repository, agentRuns, tools } = setup(
+        testConfig(),
+        () => Promise.resolve(textProposal('renamed and reported')),
+        undefined,
+        undefined,
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
+      );
+      agentRuns.findByRequest.mockReturnValue(testRun());
+      tools.resume.mockImplementation(() => Promise.resolve(approvedRename()));
+
+      const result = await service.resumeTurn('req-1', 's-1');
+
+      expect(result.status).toBe('ok');
+      expect(result.reply).toBe('renamed and reported');
+      // The continuation step was recorded on the same run.
+      expect(agentRuns.recordStep).toHaveBeenCalledWith(
+        'run-9',
+        expect.objectContaining({ toolCalls: 0 }),
+      );
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-9',
+        'completed',
+        {
+          reason: 'final_answer',
+          toolSteps: 1,
+        },
+      );
+      expect(await repository.getMessages('s-1')).toEqual([
+        { role: 'user', content: 'rename it' },
+        { role: 'assistant', content: 'renamed and reported' },
+      ]);
+    });
+
+    it('reconsiders after a rejection instead of dying on the notice', async () => {
+      const { service, repository, agentRuns, tools } = setup(
+        testConfig(),
+        () => Promise.resolve(textProposal('leaving the name as is')),
+        undefined,
+        undefined,
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
+      );
+      agentRuns.findByRequest.mockReturnValue(testRun());
+      tools.resume.mockImplementation(() =>
+        Promise.resolve({
+          ...pendingRenameRecord(renameInput('req-1')),
+          state: 'rejected',
+        }),
+      );
+
+      const result = await service.resumeTurn('req-1', 's-1');
+
+      // The agent answers from the denial observation; no mirror text
+      // is persisted as the turn.
+      expect(result.status).toBe('ok');
+      expect(result.outcome).toBeUndefined();
+      expect(result.reply).toBe('leaving the name as is');
+      expect(await repository.getMessages('s-1')).toEqual([
+        { role: 'user', content: 'rename it' },
+        { role: 'assistant', content: 'leaving the name as is' },
+      ]);
+      expect(agentRuns.markTerminal).toHaveBeenCalledWith(
+        'run-9',
+        'completed',
+        {
+          reason: 'final_answer',
+          toolSteps: 1,
+        },
+      );
+    });
+
+    it('re-parks when the continuation proposes another mutation', async () => {
+      const { service, repository, agentRuns, tools } = setup(
+        testConfig(),
+        () => Promise.resolve(renameProposal('Ward again')),
+        undefined,
+        undefined,
+        (input) => Promise.resolve(pendingRenameRecord(input)),
+      );
+      agentRuns.findByRequest.mockReturnValue(testRun());
+      tools.resume.mockImplementation(() => Promise.resolve(approvedRename()));
+
+      const result = await service.resumeTurn('req-1', 's-1');
+
+      // A new invocation needs a new authorization decision.
+      expect(result.status).toBe('approval_required');
+      expect(result.approval?.approvalId).toBe('appr-1');
+      expect(agentRuns.markParked).toHaveBeenCalledWith('run-9', 'appr-1');
+      expect(await repository.getMessages('s-1')).toHaveLength(0);
+    });
+
+    it('streams continuation steps with a single terminal done', async () => {
+      let proposals = 0;
+      const { service, agentRuns, tools } = setup(
+        testConfig(),
+        undefined,
+        () =>
+          Promise.resolve(
+            proposals++ === 0
+              ? searchProposal()
+              : textProposal('searched after rename'),
+          ),
+        undefined,
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
+          ),
+      );
+      agentRuns.findByRequest.mockReturnValue(testRun());
+      tools.resume.mockImplementation(() => Promise.resolve(approvedRename()));
+      const events: ConversationStreamEvent[] = [];
+
+      await service.resumeStream('req-1', 's-1', (event) => events.push(event));
+
+      expect(events[0]).toMatchObject({ type: 'meta' });
+      expect(events.filter((event) => event.type === 'tool')).toHaveLength(2);
+      expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
+      expect(events[events.length - 1]).toMatchObject({
+        type: 'done',
+        reply: 'searched after rename',
+        status: 'ok',
+      });
     });
   });
 

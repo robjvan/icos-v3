@@ -9,7 +9,9 @@ import { App } from 'supertest/types';
 import { CoreModule } from '../src/core.module';
 import { CORE_CONFIG } from '../src/config';
 import {
+  MAX_ITERATIONS,
   MAX_TOOL_STEPS,
+  MAX_TURN_DURATION_MS,
   TOOL_STEP_INSTRUCTION,
 } from '../src/conversation/conversation.service';
 import { buildPlanningBlock } from '../src/agent/planning-context';
@@ -145,6 +147,9 @@ describe('Conversation (e2e)', () => {
         skillsMaxActivePerSession: 5,
         skillsMaxAutoLoadedPerTurn: 2,
         skillsMaxContextChars: 8000,
+        agentMaxIterations: MAX_ITERATIONS,
+        agentMaxToolSteps: MAX_TOOL_STEPS,
+        agentMaxTurnDurationMs: MAX_TURN_DURATION_MS,
       })
       .overrideProvider(LlmClient)
       .useValue({ chatWithTools, chatStreamWithTools })
@@ -240,7 +245,11 @@ describe('Conversation (e2e)', () => {
       );
       expect(rows[0].iteration_count).toBe(1);
       expect(rows[0].tool_call_count).toBe(0);
-      expect(JSON.parse(rows[0].limits_json)).toEqual({ maxToolSteps: 5 });
+      expect(JSON.parse(rows[0].limits_json)).toEqual({
+        maxIterations: MAX_ITERATIONS,
+        maxToolSteps: MAX_TOOL_STEPS,
+        maxTurnDurationMs: MAX_TURN_DURATION_MS,
+      });
       expect(JSON.parse(rows[0].termination_json)).toMatchObject({
         reason: 'final_answer',
       });
@@ -814,6 +823,7 @@ describe('Conversation (e2e)', () => {
         goal: 'third',
         tools: new ToolRegistry().list(),
         maxToolSteps: MAX_TOOL_STEPS,
+        maxIterations: MAX_ITERATIONS,
       })}`,
       'first',
       'mock reply',
@@ -1314,7 +1324,7 @@ describe('Conversation (e2e)', () => {
       ).toEqual(['hello', 'mock reply', 'call it Ward map', 'renamed']);
     });
 
-    it('mirrors rejection with zero execution', async () => {
+    it('reconsiders after rejection with zero execution', async () => {
       const first = await request(http())
         .post('/core/conversation')
         .send({ message: 'hello' })
@@ -1333,17 +1343,53 @@ describe('Conversation (e2e)', () => {
         .send({ sessionId })
         .expect(200);
 
+      // The denial becomes an observation: the agent answers from it
+      // instead of dying on the mirror notice.
+      chatWithTools.mockResolvedValueOnce(finalText('leaving the name'));
       const resumed = await request(http())
         .post('/core/conversation/resume')
         .send({ sessionId, requestId: pending.requestId })
         .expect(200);
-      expect((resumed.body as ConversationResponse).outcome).toBe('rejected');
+      expect((resumed.body as ConversationResponse).status).toBe('ok');
+      expect((resumed.body as ConversationResponse).outcome).toBeUndefined();
+      expect((resumed.body as ConversationResponse).reply).toBe(
+        'leaving the name',
+      );
 
       const sessions = await request(http()).get('/core/sessions').expect(200);
       const kept = (
         sessions.body as { sessions: { sessionId: string; title?: string }[] }
       ).sessions.find((s) => s.sessionId === sessionId);
       expect(kept?.title).toBeUndefined();
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply', 'rename it', 'leaving the name']);
+
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const runs = db
+          .prepare(
+            `SELECT state, termination_json FROM agent_runs
+             WHERE session_id = ? ORDER BY rowid`,
+          )
+          .all(sessionId) as {
+          state: string;
+          termination_json: string;
+        }[];
+        expect(runs).toHaveLength(2);
+        expect(runs[1]).toMatchObject({ state: 'completed' });
+        expect(JSON.parse(runs[1].termination_json)).toMatchObject({
+          reason: 'final_answer',
+        });
+      } finally {
+        db.close();
+      }
     });
 
     it('validates resume requests and denies foreign sessions', async () => {

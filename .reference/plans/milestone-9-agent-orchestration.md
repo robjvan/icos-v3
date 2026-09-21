@@ -341,7 +341,15 @@ Parallel tool calls are out of scope unless required by the existing model proto
 
 ---
 
-# [ ] M9f — Termination and Completion
+# [x] M9f — Termination and Completion (implemented September 20, 2026)
+
+Implemented as a shared `terminalRun` mapping in `ConversationService`:
+clean answers complete, bound/deadline exhaustion is
+`budget_exhausted` (answer still delivered), denials complete as
+`approval_denied`, disconnects cancel (stream path, abort signal),
+errors fail. Turn deadline backstop (`MAX_TURN_DURATION_MS`, 15 min;
+M9g makes budgets configurable). Evidence:
+`milestone-9f-evidence-termination.md`.
 
 Define explicit termination behavior.
 
@@ -364,7 +372,16 @@ The agent controller should enforce hard limits even if the model continues requ
 
 ---
 
-# [ ] M9g — Execution Budgets
+# [x] M9g — Execution Budgets (implemented September 21, 2026)
+
+Implemented as configured budgets enforced in every loop entry:
+`AGENT_MAX_ITERATIONS` (5), `AGENT_MAX_TOOL_STEPS` (5),
+`AGENT_MAX_TURN_DURATION_MS` (900000), persisted per run in
+`limits` and shown in the planning block. Exhaustion forces a text
+answer with `budget_exhausted`. Token usage/cost deliberately not
+tracked (provider usage ignored by design); elapsed time derives
+from row timestamps. Evidence:
+`milestone-9g-evidence-budgets.md`.
 
 Introduce bounded execution controls.
 
@@ -394,7 +411,14 @@ Do not silently truncate the run and present it as successful completion.
 
 ---
 
-# [ ] M9h — Approval-Aware Planning
+# [x] M9h — Approval-Aware Planning (implemented September 21, 2026)
+
+Implemented as bounded resume continuation: the resolved result (or
+mirrored denial, never invented) re-enters planning against the
+run's remaining budget; re-parked mutations need a new approval;
+duplicate resumes converge on the last step's durable answer with no
+new writes. `resume` accepts `skipFinal`, mirroring `consume`.
+Evidence: `milestone-9h-evidence-approval-planning.md`.
 
 Approval becomes part of the agent lifecycle.
 

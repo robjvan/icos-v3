@@ -39,6 +39,9 @@ function testConfig(
     skillsMaxActivePerSession: 5,
     skillsMaxAutoLoadedPerTurn: 2,
     skillsMaxContextChars: 8000,
+    agentMaxIterations: 5,
+    agentMaxToolSteps: 5,
+    agentMaxTurnDurationMs: 900000,
     ...overrides,
   };
 }
@@ -263,6 +266,9 @@ describe('/skills commands', () => {
   it('/skills pull fails fast over budget', async () => {
     const { dispatcher, store, skills } = await setup(dir, {
       skillsMaxContextChars: 5,
+      agentMaxIterations: 5,
+      agentMaxToolSteps: 5,
+      agentMaxTurnDurationMs: 900000,
     });
     const { id } = await store.resolve(undefined);
     await expect(

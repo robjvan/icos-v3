@@ -44,11 +44,19 @@ export type AgentTerminalState = Extract<
 >;
 
 export interface RunLimits {
+  maxIterations: number;
   maxToolSteps: number;
+  maxTurnDurationMs: number;
 }
 
 export interface RunTermination {
-  reason: 'final_answer' | 'turn_error' | 'cancelled' | 'step_bound';
+  reason:
+    | 'final_answer'
+    | 'turn_error'
+    | 'cancelled'
+    | 'step_bound'
+    | 'time_budget'
+    | 'approval_denied';
   toolSteps: number;
 }
 
@@ -262,16 +270,28 @@ export class AgentRunRepository {
     return observed;
   }
 
-  /** Latest run in a session currently pointing at a step request. */
+  /**
+   * Latest run in a session containing a step request. Steps append to
+   * the run's request list, so duplicate resumes presenting an older
+   * (e.g. park) request id still resolve to the run.
+   */
   findByRequest(sessionId: string, requestId: string): AgentRun | undefined {
-    const row = this.connection
+    const rows = this.connection
       .prepare(
-        `SELECT * FROM agent_runs
-         WHERE session_id = ? AND current_request_id = ?
-         ORDER BY rowid DESC LIMIT 1`,
+        `SELECT * FROM agent_runs WHERE session_id = ? ORDER BY rowid DESC`,
       )
-      .get(sessionId, requestId) as AgentRunRow | undefined;
-    return row ? toRun(row) : undefined;
+      .all(sessionId) as AgentRunRow[];
+    for (const row of rows) {
+      try {
+        const ids: unknown = JSON.parse(row.request_ids);
+        if (Array.isArray(ids) && ids.includes(requestId)) {
+          return toRun(row);
+        }
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
   }
 
   private required(runId: string): AgentRun {

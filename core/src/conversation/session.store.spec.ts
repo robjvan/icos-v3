@@ -29,6 +29,9 @@ function makeStore(maxHistory = 50): {
     skillsMaxActivePerSession: 5,
     skillsMaxAutoLoadedPerTurn: 2,
     skillsMaxContextChars: 8000,
+    agentMaxIterations: 5,
+    agentMaxToolSteps: 5,
+    agentMaxTurnDurationMs: 900000,
   };
   const repository = new FakeSessionRepository();
   return { store: new SessionStore(repository, config), repository };

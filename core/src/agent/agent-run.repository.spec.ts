@@ -39,7 +39,7 @@ describe('AgentRunRepository SQLite', () => {
     const run = runs.createRun({
       sessionId: 's1',
       goal: 'find teal',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     expect(run).toMatchObject({
       sessionId: 's1',
@@ -49,7 +49,7 @@ describe('AgentRunRepository SQLite', () => {
       currentRequestId: null,
       iterationCount: 0,
       toolCallCount: 0,
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
       approvalId: null,
       termination: null,
     });
@@ -61,7 +61,7 @@ describe('AgentRunRepository SQLite', () => {
     const created = runs.createRun({
       sessionId: 's1',
       goal: 'find teal',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     const first = runs.recordStep(created.id, {
       requestId: 'req-1',
@@ -86,7 +86,7 @@ describe('AgentRunRepository SQLite', () => {
     const created = runs.createRun({
       sessionId: 's1',
       goal: 'find teal',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     for (const state of [
       'reasoning',
@@ -119,7 +119,7 @@ describe('AgentRunRepository SQLite', () => {
     const created = runs.createRun({
       sessionId: 's1',
       goal: 'rename it',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     runs.recordStep(created.id, { requestId: 'req-1', toolCalls: 1 });
     const parked = runs.markParked(created.id, 'appr-1');
@@ -142,16 +142,19 @@ describe('AgentRunRepository SQLite', () => {
     const first = runs.createRun({
       sessionId: 's1',
       goal: 'one',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     const second = runs.createRun({
       sessionId: 's1',
       goal: 'two',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     runs.recordStep(first.id, { requestId: 'req-1', toolCalls: 1 });
     runs.recordStep(second.id, { requestId: 'req-2', toolCalls: 1 });
     expect(runs.findByRequest('s1', 'req-2')?.id).toBe(second.id);
+    expect(runs.findByRequest('s1', 'req-1')?.id).toBe(first.id);
+    // Older step requests still resolve after the run moved on.
+    runs.recordStep(first.id, { requestId: 'req-1b', toolCalls: 0 });
     expect(runs.findByRequest('s1', 'req-1')?.id).toBe(first.id);
     expect(runs.findByRequest('s1', 'nope')).toBeUndefined();
     expect(runs.findByRequest('other', 'req-1')).toBeUndefined();
@@ -172,7 +175,7 @@ describe('AgentRunRepository SQLite', () => {
     const created = runs.createRun({
       sessionId: 's1',
       goal: 'gone',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     database.connection.prepare(`DELETE FROM sessions WHERE id = 's1'`).run();
     expect(() => runs.get(created.id)).toThrow('agent_run_not_found');
@@ -232,7 +235,7 @@ describe('AgentRunRepository SQLite', () => {
     const created = runs.createRun({
       sessionId: 's1',
       goal: 'find teal',
-      limits: { maxToolSteps: 5 },
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
     });
     runs.recordStep(created.id, { requestId: 'req-ok', toolCalls: 1 });
     runs.recordStep(created.id, { requestId: 'req-unknown', toolCalls: 1 });

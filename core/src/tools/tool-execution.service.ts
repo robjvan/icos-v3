@@ -144,7 +144,11 @@ export class ToolExecutionService {
   async resume(
     requestId: string,
     sessionId: string,
-    options: { sink?: StreamSink; signal?: AbortSignal } = {},
+    options: {
+      sink?: StreamSink;
+      signal?: AbortSignal;
+      skipFinal?: boolean;
+    } = {},
   ): Promise<ToolExecutionRecord> {
     const record = this.required(requestId);
     if (record.sessionId !== sessionId) throw new Error('invalid_session');
@@ -177,6 +181,11 @@ export class ToolExecutionService {
           this.ledger.mirrorOutcome(requestId, outcome);
         }
       }
+    }
+    // Post-approval continuation defers the tools-disabled final call;
+    // the driver finalizes the last step through this same path.
+    if (options.skipFinal) {
+      return this.required(requestId);
     }
     return this.maybeFinal(requestId, options);
   }

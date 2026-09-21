@@ -37,6 +37,7 @@ import type {
 import { ToolRegistry } from '../tools/tool-registry';
 import type { ToolName } from '../tools/tool-registry';
 import { AgentRunRepository } from '../agent/agent-run.repository';
+import type { AgentRun } from '../agent/agent-run.repository';
 import { observationFromRecord } from '../agent/observation';
 import { buildPlanningBlock } from '../agent/planning-context';
 import type {
@@ -105,11 +106,65 @@ export interface CommandPayload {
   data?: Record<string, unknown>;
 }
 
+/**
+ * M9f termination mapping. Bounds force truthful terminals even when
+ * an answer is delivered; denials end as delivered-but-blocked rather
+ * than clean completions or failures.
+ */
+function terminalRun(input: {
+  boundHit: boolean;
+  deadlineHit: boolean;
+  denied: boolean;
+  toolSteps: number;
+}): { state: AgentTerminalState; termination: RunTermination } {
+  if (input.deadlineHit) {
+    return {
+      state: 'budget_exhausted',
+      termination: { reason: 'time_budget', toolSteps: input.toolSteps },
+    };
+  }
+  if (input.boundHit) {
+    return {
+      state: 'budget_exhausted',
+      termination: { reason: 'step_bound', toolSteps: input.toolSteps },
+    };
+  }
+  if (input.denied) {
+    return {
+      state: 'completed',
+      termination: { reason: 'approval_denied', toolSteps: input.toolSteps },
+    };
+  }
+  return {
+    state: 'completed',
+    termination: { reason: 'final_answer', toolSteps: input.toolSteps },
+  };
+}
+
 /** Model tag for deterministic command replies (never an LLM reply). */
 const COMMAND_MODEL = 'core';
 
 /** Max tool executions per turn. Each step runs at most one call; approval-gated tools end the chain. */
 export const MAX_TOOL_STEPS = 5;
+
+/**
+ * Backstop turn duration. Per-call LLM timeouts already bound healthy
+ * turns; this ends pathological ones (repeated stalls) with a text
+ * answer instead of more tool calls. M9g makes budgets configurable.
+ */
+export const MAX_TURN_DURATION_MS = 15 * 60 * 1000;
+
+/** Default proposal-round budget; mirrors the step bound. */
+export const MAX_ITERATIONS = 5;
+
+/** Pure deadline check, exported for tests. */
+export function turnDeadlineExceeded(
+  startedAtMs: number,
+  nowMs: number,
+  limitMs: number = MAX_TURN_DURATION_MS,
+): boolean {
+  return nowMs - startedAtMs > limitMs;
+}
 
 /**
  * Steering appended to the system prompt on tool-capable turns. The
@@ -159,13 +214,22 @@ export class ConversationService {
     // Approval-free searches chain (pair appended, propose again);
     // parks, text, and invalid proposals end the turn as before.
     const runId = this.startRun(id, message);
+    const startedAt = Date.now();
     let context = turn.toolMessages;
     let lastTool: ToolSummary | undefined;
     let toolSteps = 0;
     let boundHit = false;
+    let deadlineHit = false;
     for (let step = 0; ; step++) {
       const requestId = randomUUID();
-      const finalAttempt = step >= MAX_TOOL_STEPS;
+      const finalAttempt =
+        step >= this.config.agentMaxIterations ||
+        toolSteps >= this.config.agentMaxToolSteps ||
+        turnDeadlineExceeded(
+          startedAt,
+          Date.now(),
+          this.config.agentMaxTurnDurationMs,
+        );
       this.transitionRun(runId, 'reasoning');
       let proposal: LlmResult;
       try {
@@ -217,9 +281,17 @@ export class ConversationService {
         continue;
       }
       if (pair && finalAttempt) {
-        // Bound reached with another search: finalize this step's durable
-        // result through the standard tools-disabled final call.
-        boundHit = true;
+        // Bound or deadline reached with another search: finalize this
+        // step's durable result through the standard tools-disabled
+        // final call.
+        boundHit =
+          step >= this.config.agentMaxIterations ||
+          toolSteps >= this.config.agentMaxToolSteps;
+        deadlineHit = turnDeadlineExceeded(
+          startedAt,
+          Date.now(),
+          this.config.agentMaxTurnDurationMs,
+        );
         try {
           record = await this.tools.resume(requestId, id);
         } catch (err) {
@@ -245,20 +317,18 @@ export class ConversationService {
       }
       if (outcome.status === 'approval_required' && outcome.approval) {
         this.parkRun(runId, outcome.approval.approvalId);
-      } else if (boundHit) {
-        // The model did not stop on its own: the step bound forced the
-        // answer. Delivered, but truthfully not a clean completion.
-        this.finishRun(runId, 'budget_exhausted', {
-          reason: 'step_bound',
-          toolSteps,
-        });
       } else {
-        // A delivered response completes the run, including `processing`
-        // (the background tool remains M8-governed; M9l revisits this).
-        this.finishRun(runId, 'completed', {
-          reason: 'final_answer',
+        // Forced answers (step bound, deadline) and denials terminate
+        // truthfully rather than as clean completions. `processing`
+        // counts as delivered: the background tool remains M8-governed
+        // (M9l revisits this).
+        const terminal = terminalRun({
+          boundHit,
+          deadlineHit,
+          denied: outcome.outcome !== undefined,
           toolSteps,
         });
+        this.finishRun(runId, terminal.state, terminal.termination);
       }
       if (outcome.status === 'ok' && !outcome.tool && lastTool) {
         outcome.tool = lastTool;
@@ -273,35 +343,200 @@ export class ConversationService {
    * Returns the durable outcome without re-executing anything.
    */
   async resumeTurn(requestId: string, sessionId: string): Promise<TurnOutcome> {
-    const runId = this.findRun(sessionId, requestId);
-    this.transitionRun(runId, 'executing');
+    const stored = this.findRunRecord(sessionId, requestId);
+    const storedId = stored?.id;
+    this.transitionRun(storedId, 'executing');
     let record: ToolExecutionRecord;
     try {
-      record = await this.tools.resume(requestId, sessionId);
+      // Skip the tools-disabled final: a continuable run plans again
+      // below, and the legacy path finalizes explicitly. Skipping is
+      // safe — maybeFinal only acts on succeeded/failed rows with a
+      // pending final.
+      record = await this.tools.resume(requestId, sessionId, {
+        skipFinal: true,
+      });
     } catch (err) {
-      this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps: 0 });
+      this.finishRun(storedId, 'failed', {
+        reason: 'turn_error',
+        toolSteps: 0,
+      });
       throw this.resumeError(err);
     }
     const userText = lastUserText(record);
     const history = await this.sessions.getContextMessages(record.sessionId);
-    let outcome: TurnOutcome;
-    try {
-      outcome = await this.renderTurn({
-        sessionId: record.sessionId,
-        requestId,
-        userText,
-        history,
-        record,
+    const entry = this.resumeObservationPair(record);
+    // Only a parked run continues planning; anything else (no run,
+    // terminal run, nothing executable to continue from) takes the
+    // legacy single-shot path below.
+    if (!stored || stored.state !== 'awaiting_approval' || !entry) {
+      // Legacy single-shot path: no run, terminal run, or nothing to
+      // continue from. settleResumeRecord converges terminal runs onto
+      // their last step's durable answer and finalizes anything else.
+      let settled: {
+        record: ToolExecutionRecord;
+        effectiveId: string;
+      };
+      try {
+        settled = await this.settleResumeRecord(stored, requestId, sessionId);
+      } catch (err) {
+        this.finishRun(storedId, 'failed', {
+          reason: 'turn_error',
+          toolSteps: 0,
+        });
+        throw this.resumeError(err);
+      }
+      const settledUserText = lastUserText(settled.record);
+      let outcome: TurnOutcome;
+      try {
+        outcome = await this.renderTurn({
+          sessionId: settled.record.sessionId,
+          requestId: settled.effectiveId,
+          userText: settledUserText,
+          history,
+          record: settled.record,
+        });
+      } catch (err) {
+        this.finishRun(storedId, 'failed', {
+          reason: 'turn_error',
+          toolSteps: 0,
+        });
+        throw err;
+      }
+      const terminal = terminalRun({
+        boundHit: false,
+        deadlineHit: false,
+        denied: outcome.outcome !== undefined,
+        toolSteps: 0,
       });
-    } catch (err) {
-      this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps: 0 });
-      throw err;
+      this.finishRun(storedId, terminal.state, terminal.termination);
+      return outcome;
     }
-    this.finishRun(runId, 'completed', {
-      reason: 'final_answer',
-      toolSteps: 0,
-    });
-    return outcome;
+    // M9h continuation: the resolved observation re-enters bounded
+    // planning against the run's remaining budget.
+    const descriptors = this.registry.list().slice();
+    const allowedTools = descriptors.map((descriptor) => descriptor.name);
+    const limits = stored.limits;
+    const startedAt = Date.now();
+    let context: LlmMessage[] = [
+      ...record.input.context,
+      entry.assistant,
+      entry.tool,
+    ];
+    let lastTool: ToolSummary | undefined = entry.toolSummary;
+    let newExecutions = 0;
+    for (let step = stored.iterationCount; ; step++) {
+      const finalAttempt =
+        step >= limits.maxIterations ||
+        stored.toolCallCount + newExecutions >= limits.maxToolSteps ||
+        turnDeadlineExceeded(startedAt, Date.now(), limits.maxTurnDurationMs);
+      this.transitionRun(storedId, 'reasoning');
+      let proposal: LlmResult;
+      try {
+        proposal = await this.llm.chatWithTools({
+          messages: context,
+          tools: finalAttempt ? [] : descriptors,
+          ...(finalAttempt ? { toolChoice: 'none' as const } : {}),
+          sessionId: record.sessionId,
+        });
+      } catch (err) {
+        this.finishRun(storedId, 'failed', {
+          reason: 'turn_error',
+          toolSteps: stored.toolCallCount + newExecutions,
+        });
+        throw this.providerError(err);
+      }
+      if (proposal.kind === 'tool_calls') {
+        this.transitionRun(storedId, 'action_proposed');
+        this.transitionRun(storedId, 'executing');
+      }
+      const stepRequestId = randomUUID();
+      let stepRecord: ToolExecutionRecord;
+      try {
+        stepRecord = await this.tools.consume(
+          {
+            requestId: stepRequestId,
+            sessionId: record.sessionId,
+            context,
+            allowedTools,
+            proposal,
+          },
+          { skipFinal: !finalAttempt },
+        );
+      } catch (err) {
+        this.finishRun(storedId, 'failed', {
+          reason: 'turn_error',
+          toolSteps: stored.toolCallCount + newExecutions,
+        });
+        throw this.ledgerError(err);
+      }
+      this.stepRun(
+        storedId,
+        stepRequestId,
+        proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
+      );
+      const pair = this.continuationPair(stepRecord);
+      let boundHit = false;
+      let deadlineHit = false;
+      if (pair) {
+        newExecutions += 1;
+        this.transitionRun(storedId, 'observing');
+      }
+      if (pair && !finalAttempt) {
+        lastTool = { invocationId: pair.invocationId, name: pair.name };
+        context = [...context, pair.assistant, pair.tool];
+        continue;
+      }
+      if (pair && finalAttempt) {
+        boundHit =
+          step >= limits.maxIterations ||
+          stored.toolCallCount + newExecutions >= limits.maxToolSteps;
+        deadlineHit = turnDeadlineExceeded(
+          startedAt,
+          Date.now(),
+          limits.maxTurnDurationMs,
+        );
+        try {
+          stepRecord = await this.tools.resume(stepRequestId, record.sessionId);
+        } catch (err) {
+          this.finishRun(storedId, 'failed', {
+            reason: 'turn_error',
+            toolSteps: stored.toolCallCount + newExecutions,
+          });
+          throw this.resumeError(err);
+        }
+      }
+      let outcome: TurnOutcome;
+      try {
+        outcome = await this.renderTurn({
+          sessionId: record.sessionId,
+          requestId: stepRequestId,
+          userText,
+          history,
+          record: stepRecord,
+        });
+      } catch (err) {
+        this.finishRun(storedId, 'failed', {
+          reason: 'turn_error',
+          toolSteps: stored.toolCallCount + newExecutions,
+        });
+        throw err;
+      }
+      if (outcome.status === 'approval_required' && outcome.approval) {
+        this.parkRun(storedId, outcome.approval.approvalId);
+      } else {
+        const terminal = terminalRun({
+          boundHit,
+          deadlineHit,
+          denied: outcome.outcome !== undefined,
+          toolSteps: stored.toolCallCount + newExecutions,
+        });
+        this.finishRun(storedId, terminal.state, terminal.termination);
+      }
+      if (outcome.status === 'ok' && !outcome.tool && lastTool) {
+        outcome.tool = lastTool;
+      }
+      return outcome;
+    }
   }
 
   async history(sessionId: string): Promise<{
@@ -381,14 +616,23 @@ export class ConversationService {
       // Run tracking lives outside the guarded block so stream failures
       // can still terminate the run truthfully (cancelled vs failed).
       const runId = this.startRun(id, message);
+      const startedAt = Date.now();
       let toolSteps = 0;
       let boundHit = false;
+      let deadlineHit = false;
       try {
         let context = turn.toolMessages;
         let currentRequestId = requestId;
         let lastTool: ToolSummary | undefined;
         for (let step = 0; ; step++) {
-          const finalAttempt = step >= MAX_TOOL_STEPS;
+          const finalAttempt =
+            step >= this.config.agentMaxIterations ||
+            toolSteps >= this.config.agentMaxToolSteps ||
+            turnDeadlineExceeded(
+              startedAt,
+              Date.now(),
+              this.config.agentMaxTurnDurationMs,
+            );
           this.transitionRun(runId, 'reasoning');
           let proposal: LlmResult;
           try {
@@ -455,7 +699,14 @@ export class ConversationService {
             continue;
           }
           if (pair && finalAttempt) {
-            boundHit = true;
+            boundHit =
+              step >= this.config.agentMaxIterations ||
+              toolSteps >= this.config.agentMaxToolSteps;
+            deadlineHit = turnDeadlineExceeded(
+              startedAt,
+              Date.now(),
+              this.config.agentMaxTurnDurationMs,
+            );
             try {
               record = await this.tools.resume(currentRequestId, id, {
                 sink,
@@ -490,16 +741,14 @@ export class ConversationService {
           }
           if (outcome.status === 'approval_required' && outcome.approval) {
             this.parkRun(runId, outcome.approval.approvalId);
-          } else if (boundHit) {
-            this.finishRun(runId, 'budget_exhausted', {
-              reason: 'step_bound',
-              toolSteps,
-            });
           } else {
-            this.finishRun(runId, 'completed', {
-              reason: 'final_answer',
+            const terminal = terminalRun({
+              boundHit,
+              deadlineHit,
+              denied: outcome.outcome !== undefined,
               toolSteps,
             });
+            this.finishRun(runId, terminal.state, terminal.termination);
           }
           if (outcome.status === 'ok' && !outcome.tool && lastTool) {
             outcome.tool = lastTool;
@@ -540,39 +789,243 @@ export class ConversationService {
         model: this.config.llmModel,
         requestId,
       });
+      // Run tracking lives outside the guarded block so resume
+      // failures can still terminate the run truthfully.
+      let storedId: string | undefined;
       try {
-        const runId = this.findRun(sessionId, requestId);
-        this.transitionRun(runId, 'executing');
-        const record = await this.tools.resume(requestId, sessionId, {
-          sink: { onToken: (content) => emit({ type: 'token', content }) },
-          signal: clientSignal,
-        });
-        const userText = lastUserText(record);
-        const history = await this.sessions.getContextMessages(
-          record.sessionId,
-        );
-        let outcome: TurnOutcome;
+        const stored = this.findRunRecord(sessionId, requestId);
+        storedId = stored?.id;
+        this.transitionRun(storedId, 'executing');
+        let record: ToolExecutionRecord;
         try {
-          outcome = await this.renderTurn({
-            sessionId: record.sessionId,
-            requestId,
-            userText,
-            history,
-            record,
+          record = await this.tools.resume(requestId, sessionId, {
+            sink: { onToken: (content) => emit({ type: 'token', content }) },
+            signal: clientSignal,
+            skipFinal: true,
           });
         } catch (err) {
-          this.finishRun(runId, 'failed', {
+          this.finishRun(storedId, 'failed', {
             reason: 'turn_error',
             toolSteps: 0,
           });
           throw err;
         }
-        this.finishRun(runId, 'completed', {
-          reason: 'final_answer',
+        const userText = lastUserText(record);
+        const history = await this.sessions.getContextMessages(
+          record.sessionId,
+        );
+        const entry = this.resumeObservationPair(record);
+        if (!stored || stored.state !== 'awaiting_approval' || !entry) {
+          // Legacy single-shot path: settleResumeRecord converges
+          // terminal runs onto their last step's durable answer and
+          // finalizes anything else.
+          const streaming: {
+            sink: StreamSink;
+            signal?: AbortSignal;
+          } = {
+            sink: { onToken: (content) => emit({ type: 'token', content }) },
+            signal: clientSignal,
+          };
+          let settled: {
+            record: ToolExecutionRecord;
+            effectiveId: string;
+          };
+          try {
+            settled = await this.settleResumeRecord(
+              stored,
+              requestId,
+              sessionId,
+              streaming,
+            );
+          } catch (err) {
+            this.finishRun(storedId, 'failed', {
+              reason: 'turn_error',
+              toolSteps: 0,
+            });
+            throw err;
+          }
+          const settledUserText = lastUserText(settled.record);
+          let outcome: TurnOutcome;
+          try {
+            outcome = await this.renderTurn({
+              sessionId: settled.record.sessionId,
+              requestId: settled.effectiveId,
+              userText: settledUserText,
+              history,
+              record: settled.record,
+            });
+          } catch (err) {
+            this.finishRun(storedId, 'failed', {
+              reason: 'turn_error',
+              toolSteps: 0,
+            });
+            throw err;
+          }
+          const terminal = terminalRun({
+            boundHit: false,
+            deadlineHit: false,
+            denied: outcome.outcome !== undefined,
+            toolSteps: 0,
+          });
+          this.finishRun(storedId, terminal.state, terminal.termination);
+          this.emitTurn(emit, outcome);
+          return;
+        }
+        // M9h continuation: bounded planning over remaining budget.
+        // Exactly one terminal done follows; intermediate searches emit
+        // progress only.
+        const descriptors = this.registry.list().slice();
+        const allowedTools = descriptors.map((descriptor) => descriptor.name);
+        const limits = stored.limits;
+        const startedAt = Date.now();
+        const sink: StreamSink = {
+          onToken: (content) => emit({ type: 'token', content }),
+        };
+        let context: LlmMessage[] = [
+          ...record.input.context,
+          entry.assistant,
+          entry.tool,
+        ];
+        let lastTool: ToolSummary | undefined = entry.toolSummary;
+        let newExecutions = 0;
+        for (let step = stored.iterationCount; ; step++) {
+          const finalAttempt =
+            step >= limits.maxIterations ||
+            stored.toolCallCount + newExecutions >= limits.maxToolSteps ||
+            turnDeadlineExceeded(
+              startedAt,
+              Date.now(),
+              limits.maxTurnDurationMs,
+            );
+          this.transitionRun(storedId, 'reasoning');
+          let proposal: LlmResult;
+          try {
+            proposal = await this.llm.chatStreamWithTools(
+              {
+                messages: context,
+                tools: finalAttempt ? [] : descriptors,
+                ...(finalAttempt ? { toolChoice: 'none' as const } : {}),
+                sessionId: record.sessionId,
+              },
+              sink,
+              clientSignal,
+            );
+          } catch (err) {
+            this.finishRun(storedId, 'failed', {
+              reason: 'turn_error',
+              toolSteps: stored.toolCallCount + newExecutions,
+            });
+            throw err;
+          }
+          if (proposal.kind === 'tool_calls') {
+            this.transitionRun(storedId, 'action_proposed');
+            this.transitionRun(storedId, 'executing');
+          }
+          const stepRequestId = randomUUID();
+          let stepRecord: ToolExecutionRecord;
+          try {
+            stepRecord = await this.tools.consume(
+              {
+                requestId: stepRequestId,
+                sessionId: record.sessionId,
+                context,
+                allowedTools,
+                proposal,
+              },
+              { sink, signal: clientSignal, skipFinal: !finalAttempt },
+            );
+          } catch (err) {
+            this.finishRun(storedId, 'failed', {
+              reason: 'turn_error',
+              toolSteps: stored.toolCallCount + newExecutions,
+            });
+            throw err;
+          }
+          this.stepRun(
+            storedId,
+            stepRequestId,
+            proposal.kind === 'tool_calls' ? proposal.toolCalls.length : 0,
+          );
+          const pair = this.continuationPair(stepRecord);
+          let boundHit = false;
+          let deadlineHit = false;
+          if (pair) {
+            newExecutions += 1;
+            this.transitionRun(storedId, 'observing');
+          }
+          if (pair && !finalAttempt) {
+            lastTool = { invocationId: pair.invocationId, name: pair.name };
+            emit({
+              type: 'tool',
+              invocationId: pair.invocationId,
+              name: pair.name,
+              state: 'succeeded',
+            });
+            context = [...context, pair.assistant, pair.tool];
+            continue;
+          }
+          if (pair && finalAttempt) {
+            boundHit =
+              step >= limits.maxIterations ||
+              stored.toolCallCount + newExecutions >= limits.maxToolSteps;
+            deadlineHit = turnDeadlineExceeded(
+              startedAt,
+              Date.now(),
+              limits.maxTurnDurationMs,
+            );
+            try {
+              stepRecord = await this.tools.resume(
+                stepRequestId,
+                record.sessionId,
+                { sink, signal: clientSignal },
+              );
+            } catch (err) {
+              this.finishRun(storedId, 'failed', {
+                reason: 'turn_error',
+                toolSteps: stored.toolCallCount + newExecutions,
+              });
+              throw err;
+            }
+          }
+          let outcome: TurnOutcome;
+          try {
+            outcome = await this.renderTurn({
+              sessionId: record.sessionId,
+              requestId: stepRequestId,
+              userText,
+              history,
+              record: stepRecord,
+            });
+          } catch (err) {
+            this.finishRun(storedId, 'failed', {
+              reason: 'turn_error',
+              toolSteps: stored.toolCallCount + newExecutions,
+            });
+            throw err;
+          }
+          if (outcome.status === 'approval_required' && outcome.approval) {
+            this.parkRun(storedId, outcome.approval.approvalId);
+          } else {
+            const terminal = terminalRun({
+              boundHit,
+              deadlineHit,
+              denied: outcome.outcome !== undefined,
+              toolSteps: stored.toolCallCount + newExecutions,
+            });
+            this.finishRun(storedId, terminal.state, terminal.termination);
+          }
+          if (outcome.status === 'ok' && !outcome.tool && lastTool) {
+            outcome.tool = lastTool;
+          }
+          this.emitTurn(emit, outcome);
+          return;
+        }
+      } catch (err) {
+        const cancelled = clientSignal?.aborted === true;
+        this.finishRun(storedId, cancelled ? 'cancelled' : 'failed', {
+          reason: cancelled ? 'cancelled' : 'turn_error',
           toolSteps: 0,
         });
-        this.emitTurn(emit, outcome);
-      } catch (err) {
         emit({
           type: 'error',
           message: this.errorMessage(err),
@@ -618,12 +1071,12 @@ export class ConversationService {
   }
 
   /**
-   * Continuation for a completed approval-free search step: the
-   * assistant/tool messages to append before proposing again, mirroring
-   * the final-call shape. Built from the step observation, so the loop
-   * reasons from the same authoritative result the run records.
-   * Anything else (park, text, invalid, unfinished) ends the turn
-   * through the standard render path.
+   * Continuation for a completed step: the assistant/tool messages to
+   * append before proposing again, mirroring the final-call shape.
+   * Built from the step observation, so the loop reasons from the same
+   * authoritative result the run records. Anything without a durable
+   * execution (park, text, invalid, unfinished) ends the turn through
+   * the standard render path.
    */
   private continuationPair(record: ToolExecutionRecord):
     | {
@@ -637,7 +1090,7 @@ export class ConversationService {
       return undefined;
     }
     const observation = observationFromRecord(record);
-    if (!observation || observation.tool !== 'session.search') {
+    if (!observation) {
       return undefined;
     }
     const proposal = record.input.proposal;
@@ -656,6 +1109,64 @@ export class ConversationService {
         content: JSON.stringify(observation.result),
       },
     };
+  }
+
+  /**
+   * Entry pair resuming a parked turn: the executed result, or — for
+   * mirrored rejections/cancellations/expiry, where no execution
+   * exists — the denial as an observation built from durable ledger
+   * state, never invented. Undefined when there is nothing to continue
+   * from; the caller then falls back to the legacy single-shot render.
+   */
+  private resumeObservationPair(record: ToolExecutionRecord):
+    | {
+        assistant: LlmMessage;
+        tool: LlmMessage;
+        toolSummary: ToolSummary;
+      }
+    | undefined {
+    const proposal = record.input.proposal;
+    if (proposal.kind !== 'tool_calls' || !record.invocationId) {
+      return undefined;
+    }
+    const validation = record.validation;
+    if (!validation.ok || !('request' in validation)) return undefined;
+    const assistant: LlmMessage = {
+      role: 'assistant',
+      content: proposal.content,
+      toolCalls: [{ ...proposal.toolCalls[0], id: record.invocationId }],
+    };
+    const toolSummary: ToolSummary = {
+      invocationId: record.invocationId,
+      name: validation.request.name,
+    };
+    if (record.execution) {
+      return {
+        assistant,
+        tool: {
+          role: 'tool',
+          callId: record.invocationId,
+          content: JSON.stringify(record.execution),
+        },
+        toolSummary,
+      };
+    }
+    if (
+      record.state === 'rejected' ||
+      record.state === 'cancelled' ||
+      record.state === 'expired'
+    ) {
+      return {
+        assistant,
+        tool: {
+          role: 'tool',
+          callId: record.invocationId,
+          content: JSON.stringify({ ok: false, outcome: record.state }),
+        },
+        toolSummary,
+      };
+    }
+    return undefined;
   }
 
   private async prepareTurn(
@@ -688,7 +1199,8 @@ export class ConversationService {
     const block = buildPlanningBlock({
       goal: message,
       tools: descriptors,
-      maxToolSteps: MAX_TOOL_STEPS,
+      maxToolSteps: this.config.agentMaxToolSteps,
+      maxIterations: this.config.agentMaxIterations,
     });
     const systemExtra = `${TOOL_STEP_INSTRUCTION}\n\n${block}`;
     const [head, ...tail] = toolMessages;
@@ -975,7 +1487,11 @@ export class ConversationService {
       return this.agentRuns.createRun({
         sessionId,
         goal,
-        limits: { maxToolSteps: MAX_TOOL_STEPS },
+        limits: {
+          maxIterations: this.config.agentMaxIterations,
+          maxToolSteps: this.config.agentMaxToolSteps,
+          maxTurnDurationMs: this.config.agentMaxTurnDurationMs,
+        },
       }).id;
     } catch (err) {
       this.trackingFailed(err);
@@ -1030,13 +1546,66 @@ export class ConversationService {
     }
   }
 
-  private findRun(sessionId: string, requestId: string): string | undefined {
+  private findRunRecord(
+    sessionId: string,
+    requestId: string,
+  ): AgentRun | undefined {
     try {
-      return this.agentRuns.findByRequest(sessionId, requestId)?.id;
+      return this.agentRuns.findByRequest(sessionId, requestId);
     } catch (err) {
       this.trackingFailed(err);
       return undefined;
     }
+  }
+
+  /**
+   * Settle a legacy resume (no continuation): converge terminal runs
+   * onto their last step's durable answer, otherwise finalize the
+   * given request explicitly (a no-op when already final). A durable
+   * answer is a succeeded final or a closed text proposal — both
+   * already transcript-claimed, so re-rendering writes nothing and
+   * answers identically. Anything else falls back to finalizing the
+   * request itself, preserving pre-continuation behavior including
+   * crash-window recovery.
+   */
+  private async settleResumeRecord(
+    stored: AgentRun | undefined,
+    requestId: string,
+    sessionId: string,
+    streaming?: { sink: StreamSink; signal?: AbortSignal },
+  ): Promise<{ record: ToolExecutionRecord; effectiveId: string }> {
+    const options = {
+      ...(streaming ? { sink: streaming.sink, signal: streaming.signal } : {}),
+    };
+    const terminal =
+      stored &&
+      (stored.state === 'completed' ||
+        stored.state === 'failed' ||
+        stored.state === 'cancelled' ||
+        stored.state === 'budget_exhausted');
+    const last =
+      terminal && stored.requestIds[stored.requestIds.length - 1] !== requestId
+        ? stored.requestIds[stored.requestIds.length - 1]
+        : undefined;
+    if (last) {
+      const candidate = await this.tools.resume(last, sessionId, {
+        ...options,
+        skipFinal: true,
+      });
+      if (
+        candidate.final.state === 'succeeded' ||
+        (candidate.state === 'closed' &&
+          candidate.validation.ok &&
+          'textOnly' in candidate.validation)
+      ) {
+        return { record: candidate, effectiveId: last };
+      }
+      // Unfinalized tail (crash window): finalize it as recovery.
+      const recovered = await this.tools.resume(last, sessionId, options);
+      return { record: recovered, effectiveId: last };
+    }
+    const record = await this.tools.resume(requestId, sessionId, options);
+    return { record, effectiveId: requestId };
   }
 
   private trackingFailed(err: unknown): void {
