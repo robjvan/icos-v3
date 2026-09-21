@@ -37,6 +37,8 @@ import type {
 import { ToolRegistry } from '../tools/tool-registry';
 import type { ToolName } from '../tools/tool-registry';
 import { AgentRunRepository } from '../agent/agent-run.repository';
+import { observationFromRecord } from '../agent/observation';
+import { buildPlanningBlock } from '../agent/planning-context';
 import type {
   AgentTerminalState,
   AgentTransientState,
@@ -618,8 +620,10 @@ export class ConversationService {
   /**
    * Continuation for a completed approval-free search step: the
    * assistant/tool messages to append before proposing again, mirroring
-   * the final-call shape. Anything else (park, text, invalid,
-   * unfinished) ends the turn through the standard render path.
+   * the final-call shape. Built from the step observation, so the loop
+   * reasons from the same authoritative result the run records.
+   * Anything else (park, text, invalid, unfinished) ends the turn
+   * through the standard render path.
    */
   private continuationPair(record: ToolExecutionRecord):
     | {
@@ -629,29 +633,27 @@ export class ConversationService {
         tool: LlmMessage;
       }
     | undefined {
-    if (
-      (record.state !== 'succeeded' && record.state !== 'failed') ||
-      !record.invocationId ||
-      !record.execution
-    )
+    if (record.state !== 'succeeded' && record.state !== 'failed') {
       return undefined;
-    const validation = record.validation;
-    if (!validation.ok || !('request' in validation)) return undefined;
-    if (validation.request.name !== 'session.search') return undefined;
+    }
+    const observation = observationFromRecord(record);
+    if (!observation || observation.tool !== 'session.search') {
+      return undefined;
+    }
     const proposal = record.input.proposal;
     if (proposal.kind !== 'tool_calls') return undefined;
     return {
-      invocationId: record.invocationId,
-      name: validation.request.name,
+      invocationId: observation.invocationId,
+      name: observation.tool,
       assistant: {
         role: 'assistant',
         content: proposal.content,
-        toolCalls: [{ ...proposal.toolCalls[0], id: record.invocationId }],
+        toolCalls: [{ ...proposal.toolCalls[0], id: observation.invocationId }],
       },
       tool: {
         role: 'tool',
-        callId: record.invocationId,
-        content: JSON.stringify(record.execution),
+        callId: observation.invocationId,
+        content: JSON.stringify(observation.result),
       },
     };
   }
@@ -680,16 +682,20 @@ export class ConversationService {
     ];
     const descriptors = this.registry.list().slice();
     const allowedTools = descriptors.map((descriptor) => descriptor.name);
-    // Steer one-call-per-step tool use. buildContext leads with the system
-    // message whenever a prompt or catalog exists; otherwise stage one.
+    // Steer one-call-per-step tool use and frame the turn goal.
+    // buildContext leads with the system message whenever a prompt or
+    // catalog exists; otherwise stage one.
+    const block = buildPlanningBlock({
+      goal: message,
+      tools: descriptors,
+      maxToolSteps: MAX_TOOL_STEPS,
+    });
+    const systemExtra = `${TOOL_STEP_INSTRUCTION}\n\n${block}`;
     const [head, ...tail] = toolMessages;
     const stepped: LlmMessage[] =
       head?.role === 'system'
-        ? [
-            { ...head, content: `${head.content}\n\n${TOOL_STEP_INSTRUCTION}` },
-            ...tail,
-          ]
-        : [{ role: 'system', content: TOOL_STEP_INSTRUCTION }, ...toolMessages];
+        ? [{ ...head, content: `${head.content}\n\n${systemExtra}` }, ...tail]
+        : [{ role: 'system', content: systemExtra }, ...toolMessages];
     return {
       history,
       skills,

@@ -15,7 +15,8 @@ import { SKILL_FILE } from '../skills/skill-loader';
 import { SkillService } from '../skills/skill.service';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
-import { TOOL_STEP_INSTRUCTION } from './conversation.service';
+import { MAX_TOOL_STEPS, TOOL_STEP_INSTRUCTION } from './conversation.service';
+import { buildPlanningBlock } from '../agent/planning-context';
 import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
 import {
@@ -285,7 +286,13 @@ describe('ConversationService skill injection (M7c)', () => {
     expect(sentMessages(chat)).toEqual([
       {
         role: 'system',
-        content: `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
+        content: `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${buildPlanningBlock(
+          {
+            goal: 'hello',
+            tools: new ToolRegistry().list(),
+            maxToolSteps: MAX_TOOL_STEPS,
+          },
+        )}`,
       },
       { role: 'user', content: 'hello' },
     ]);

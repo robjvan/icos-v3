@@ -182,7 +182,15 @@ Likewise, an agent waiting for approval must not be treated as failed or complet
 
 ---
 
-# [ ] M9c — Tool Selection and Planning
+# [x] M9c — Tool Selection and Planning (implemented September 20, 2026)
+
+Implemented as a static per-turn planning block
+(`core/src/agent/planning-context.ts`) merged into the system message:
+turn goal, tool policies (immediate vs approval-pausing), and total
+step budget, alongside the one-call steering. Previous actions and
+observations ride the existing pair context; the wire schema is
+untouched. Step-varying budget restatement belongs to M9k. Evidence:
+`milestone-9c-evidence-planning.md`.
 
 M9 introduces **single-step and multi-step tool planning**.
 
@@ -238,7 +246,16 @@ The initial planner should remain model-driven.
 
 ---
 
-# [ ] M9d — Observation and Context Update
+# [x] M9d — Observation and Context Update (implemented September 20, 2026)
+
+Implemented as `RunObservation` in `core/src/agent/observation.ts`,
+derived from M8 ledger rows (never duplicated): status from the
+execution payload (`ok` → succeeded, `unknown` → unknown, else
+failed); rows without a durable execution yield nothing.
+`AgentRunRepository.observations()` returns them in step order linked
+by invocation id, and the loop builds continuation pairs from the
+same derivation. Evidence:
+`milestone-9d-evidence-observations.md`.
 
 Tool results become **observations** available to subsequent reasoning.
 

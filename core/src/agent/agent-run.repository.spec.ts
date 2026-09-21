@@ -177,4 +177,84 @@ describe('AgentRunRepository SQLite', () => {
     database.connection.prepare(`DELETE FROM sessions WHERE id = 's1'`).run();
     expect(() => runs.get(created.id)).toThrow('agent_run_not_found');
   });
+
+  it('derives observations from ledger rows in step order', () => {
+    const { database, runs } = open();
+    const insert = database.connection.prepare(
+      `INSERT INTO tool_requests
+        (request_id, session_id, input_json, invocation_id, state,
+         validation_json, execution_json, final_state, final_json)
+       VALUES (?, 's1', ?, ?, ?, ?, ?, 'not_required', ?)`,
+    );
+    const proposal = JSON.stringify({
+      requestId: 'req-ok',
+      sessionId: 's1',
+      context: [],
+      allowedTools: ['session.search'],
+      proposal: { kind: 'tool_calls', model: 'm', content: null },
+    });
+    const validation = JSON.stringify({
+      ok: true,
+      request: {
+        name: 'session.search',
+        version: 1,
+        sessionId: 's1',
+        args: { query: 'teal', limit: 20 },
+      },
+    });
+    insert.run(
+      'req-ok',
+      proposal,
+      'inv-ok',
+      'succeeded',
+      validation,
+      JSON.stringify({ ok: true, matches: [] }),
+      '{"state":"not_required"}',
+    );
+    insert.run(
+      'req-unknown',
+      proposal,
+      'inv-unknown',
+      'failed',
+      validation,
+      JSON.stringify({ ok: false, failure: { code: 'unknown' } }),
+      '{"state":"not_required"}',
+    );
+    insert.run(
+      'req-invalid',
+      proposal,
+      'inv-bad',
+      'invalid',
+      JSON.stringify({ ok: false, failure: { code: 'unknown_tool' } }),
+      null,
+      '{"state":"not_required"}',
+    );
+    const created = runs.createRun({
+      sessionId: 's1',
+      goal: 'find teal',
+      limits: { maxToolSteps: 5 },
+    });
+    runs.recordStep(created.id, { requestId: 'req-ok', toolCalls: 1 });
+    runs.recordStep(created.id, { requestId: 'req-unknown', toolCalls: 1 });
+    runs.recordStep(created.id, { requestId: 'req-invalid', toolCalls: 1 });
+    runs.recordStep(created.id, { requestId: 'req-missing', toolCalls: 1 });
+
+    const observations = runs.observations(created.id);
+
+    // Only executed actions observe, in step order, linked by identity.
+    expect(observations.map((o) => o.requestId)).toEqual([
+      'req-ok',
+      'req-unknown',
+    ]);
+    expect(observations[0]).toMatchObject({
+      invocationId: 'inv-ok',
+      tool: 'session.search',
+      status: 'succeeded',
+    });
+    // Unknown stays unknown — never converted to failure.
+    expect(observations[1]).toMatchObject({
+      invocationId: 'inv-unknown',
+      status: 'unknown',
+    });
+  });
 });

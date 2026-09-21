@@ -2,6 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { SessionDatabaseService } from '../session/session-database.service';
+import type {
+  ToolExecutionInput,
+  ToolExecutionRecord,
+  ValidationOutcome,
+} from '../tools/tool-execution.repository';
+import type { RunObservation } from './observation';
+import { observationFromRecord } from './observation';
 
 /**
  * M9a agent-run state. A run is one user goal pursued inside a session;
@@ -204,6 +211,55 @@ export class AgentRunRepository {
 
   get(runId: string): AgentRun {
     return this.required(runId);
+  }
+
+  /**
+   * Observations for a run in step order: one per executed action,
+   * each linked to its invocation with the authoritative result.
+   * Rows without a durable execution (pending, parked, invalid) yield
+   * no observation — the agent reasons from actual results only.
+   */
+  observations(runId: string): RunObservation[] {
+    const run = this.required(runId);
+    const observed: RunObservation[] = [];
+    const row = this.connection.prepare(
+      `SELECT input_json, invocation_id, validation_json, execution_json, state
+       FROM tool_requests WHERE request_id = ?`,
+    );
+    for (const requestId of run.requestIds) {
+      try {
+        const found = row.get(requestId) as
+          | {
+              input_json: string;
+              invocation_id: string | null;
+              validation_json: string;
+              execution_json: string | null;
+              state: ToolExecutionRecord['state'];
+            }
+          | undefined;
+        if (!found) continue;
+        const record = {
+          requestId,
+          sessionId: run.sessionId,
+          input: JSON.parse(found.input_json) as ToolExecutionInput,
+          invocationId: found.invocation_id,
+          approvalId: null,
+          state: found.state,
+          validation: JSON.parse(found.validation_json) as ValidationOutcome,
+          execution: found.execution_json
+            ? (JSON.parse(found.execution_json) as RunObservation['result'])
+            : null,
+          final: { state: 'not_required' },
+          executionToken: null,
+          ownership: 'none',
+        } as ToolExecutionRecord;
+        const observation = observationFromRecord(record);
+        if (observation) observed.push(observation);
+      } catch {
+        continue;
+      }
+    }
+    return observed;
   }
 
   /** Latest run in a session currently pointing at a step request. */

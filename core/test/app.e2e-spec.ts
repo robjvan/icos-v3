@@ -8,7 +8,12 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { CoreModule } from '../src/core.module';
 import { CORE_CONFIG } from '../src/config';
-import { TOOL_STEP_INSTRUCTION } from '../src/conversation/conversation.service';
+import {
+  MAX_TOOL_STEPS,
+  TOOL_STEP_INSTRUCTION,
+} from '../src/conversation/conversation.service';
+import { buildPlanningBlock } from '../src/agent/planning-context';
+import { ToolRegistry } from '../src/tools/tool-registry';
 import { LlmClient } from '../src/llm/llm.client';
 import { MemoryCandidateExtractor } from '../src/memory/memory-candidate-extractor';
 
@@ -805,7 +810,11 @@ describe('Conversation (e2e)', () => {
       messages: { content: string }[];
     };
     expect(sent.messages.map((m) => m.content)).toEqual([
-      `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${buildPlanningBlock({
+        goal: 'third',
+        tools: new ToolRegistry().list(),
+        maxToolSteps: MAX_TOOL_STEPS,
+      })}`,
       'first',
       'mock reply',
       'third',

@@ -23,6 +23,7 @@ import type { ToolExecutionInput } from '../tools/tool-execution.repository';
 import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
 import { MAX_TOOL_STEPS, TOOL_STEP_INSTRUCTION } from './conversation.service';
+import { buildPlanningBlock } from '../agent/planning-context';
 import type { ConversationStreamEvent } from './conversation.service';
 import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
@@ -72,6 +73,14 @@ const flushMicrotasks = (): Promise<void> =>
   new Promise((resolve) => setImmediate(resolve));
 
 const anyString = expect.any(String) as unknown as string;
+
+function planningBlock(goal: string): string {
+  return buildPlanningBlock({
+    goal,
+    tools: new ToolRegistry().list(),
+    maxToolSteps: MAX_TOOL_STEPS,
+  });
+}
 
 function setup(
   config: CoreConfig = testConfig(),
@@ -187,7 +196,7 @@ describe('ConversationService', () => {
     ]);
     expect(sent.messages[0]).toEqual({
       role: 'system',
-      content: `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
+      content: `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${planningBlock('hello')}`,
     });
     expect(sent.messages[sent.messages.length - 1]).toEqual({
       role: 'user',
@@ -203,6 +212,21 @@ describe('ConversationService', () => {
     ]);
   });
 
+  it('frames each turn with goal, tool policies, and budget', async () => {
+    const { service, chatWithTools } = setup();
+
+    await service.converse('find teal');
+
+    const sent = chatWithTools.mock.calls[0][0];
+    const system = String(sent.messages[0].content);
+    expect(system).toContain('Goal for this turn: find teal');
+    expect(system).toContain('session.search (runs immediately)');
+    expect(system).toContain(
+      'session.rename (pauses for human approval and ends your turn)',
+    );
+    expect(system).toContain('at most 5 tool steps');
+  });
+
   it('continues an existing session and includes prior history', async () => {
     const { service, chatWithTools } = setup();
     const first = await service.converse('first');
@@ -211,7 +235,7 @@ describe('ConversationService', () => {
     const secondCall = chatWithTools.mock.calls[1][0];
     expect(secondCall.sessionId).toBe(first.sessionId);
     expect(secondCall.messages.map((m) => m.content)).toEqual([
-      `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${planningBlock('second')}`,
       'first',
       'hi back',
       'second',
@@ -234,7 +258,7 @@ describe('ConversationService', () => {
     const sent = chatWithTools.mock.calls[1][0];
     // system + last 5 stored + new input.
     expect(sent.messages.map((m) => m.content)).toEqual([
-      `test-system\n\n${TOOL_STEP_INSTRUCTION}`,
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${planningBlock('latest')}`,
       'stored-5',
       'stored-6',
       'stored-7',
@@ -621,6 +645,48 @@ describe('ConversationService', () => {
         tool: 'session.rename',
       });
       expect(await repository.getMessages(result.sessionId)).toHaveLength(0);
+    });
+
+    it('chains after a failed search with the failure observable', async () => {
+      let proposals = 0;
+      const { service, chatWithTools } = setup(
+        testConfig(),
+        () =>
+          Promise.resolve(
+            proposals++ === 0 ? searchProposal() : textProposal('gave up'),
+          ),
+        undefined,
+        undefined,
+        (input) => {
+          if (input.proposal.kind === 'text') {
+            return Promise.resolve(closedTextRecord(input));
+          }
+          return Promise.resolve({
+            ...searchRecord(input, ''),
+            state: 'failed' as const,
+            execution: {
+              ok: false as const,
+              failure: { code: 'search_failed' as const },
+            },
+          });
+        },
+      );
+
+      const result = await service.converse('find teal');
+
+      // The failed execution still continued the loop instead of dying.
+      expect(chatWithTools).toHaveBeenCalledTimes(2);
+      const second = chatWithTools.mock.calls[1][0];
+      const toolMessage = second.messages.find(
+        (message) => message.role === 'tool',
+      );
+      expect(toolMessage).toMatchObject({ callId: 'inv-search-1' });
+      expect(JSON.parse(toolMessage?.content ?? '{}')).toEqual({
+        ok: false,
+        failure: { code: 'search_failed' },
+      });
+      expect(result.status).toBe('ok');
+      expect(result.reply).toBe('gave up');
     });
 
     it('still rejects fan-out proposals without executing anything', async () => {
