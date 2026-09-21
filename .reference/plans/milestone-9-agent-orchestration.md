@@ -596,7 +596,14 @@ It must not rerun an invocation merely because the process stopped before the ne
 
 ---
 
-# [ ] M9m — Verification
+# [x] M9m — Verification (implemented September 21, 2026)
+
+Implemented as coverage, not new behavior: every agent-level
+invariant (planning, loop, approval, termination, recovery) maps to
+a named test that would fail if it broke, closing four gaps found by
+audit — chained-step identity, park-no-execution, and both restart
+recoveries. Evidence (with coverage map):
+`milestone-9m-evidence-verification.md`.
 
 Verification should focus on **agent-level invariants**, building on the M8 execution tests.
 

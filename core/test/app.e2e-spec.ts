@@ -1332,6 +1332,25 @@ describe('Conversation (e2e)', () => {
         (before.body as HistoryResponse).messages.map((m) => m.content),
       ).toEqual(['hello', 'mock reply']);
 
+      // The parked invocation exists with no execution attached.
+      const parkDb = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const parked = parkDb
+          .prepare(
+            `SELECT state, execution_json FROM tool_requests WHERE request_id = ?`,
+          )
+          .get(pending.requestId) as {
+          state: string;
+          execution_json: string | null;
+        };
+        expect(parked.state).toBe('awaiting_approval');
+        expect(parked.execution_json).toBeNull();
+      } finally {
+        parkDb.close();
+      }
+
       await request(http())
         .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
         .send({ sessionId })
@@ -1537,6 +1556,158 @@ describe('Conversation (e2e)', () => {
         (m) => m.content,
       );
       expect(contents.filter((c) => c === 'renamed')).toHaveLength(1);
+    });
+
+    it('keeps distinct durable identities across chained steps', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(searchCall('local'));
+      chatWithTools.mockResolvedValueOnce(finalText('both found'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find both', sessionId })
+        .expect(200);
+      expect((turn.body as ConversationResponse).status).toBe('ok');
+
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const rows = db
+          .prepare(
+            `SELECT request_id, invocation_id, execution_json IS NOT NULL AS executed
+             FROM tool_requests WHERE session_id = ? ORDER BY rowid`,
+          )
+          .all(sessionId) as {
+          request_id: string;
+          invocation_id: string | null;
+          executed: number;
+        }[];
+        // Two executed steps with distinct durable invocations, plus
+        // the closing text row — no duplicates, no shared identity.
+        const invoked = rows.filter((r) => r.invocation_id);
+        expect(invoked).toHaveLength(2);
+        expect(invoked[0].invocation_id).not.toBe(invoked[1].invocation_id);
+        expect(invoked.map((r) => r.executed)).toEqual([1, 1]);
+        const runs = db
+          .prepare(`SELECT request_ids FROM agent_runs WHERE session_id = ?`)
+          .all(sessionId) as { request_ids: string }[];
+        const chained = runs.filter(
+          (r) => (JSON.parse(r.request_ids) as string[]).length === 3,
+        );
+        expect(chained).toHaveLength(1);
+        // The seed turn's closed text row leads; the run references
+        // exactly its own three steps.
+        expect(JSON.parse(chained[0].request_ids)).toEqual(
+          rows.map((r) => r.request_id).slice(-3),
+        );
+      } finally {
+        db.close();
+      }
+
+      // One transcript pair despite two executions.
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find both', 'both found']);
+    });
+
+    it('recovers a failed final across restart without re-executing', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      // The model keeps searching, so the step bound finalizes through
+      // resume(); the final call itself goes down.
+      for (let i = 0; i < 6; i++) {
+        chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      }
+      chatWithTools.mockRejectedValueOnce(new Error('provider down'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      const requestId = (turn.body as ConversationResponse).requestId;
+      expect((turn.body as ConversationResponse).status).toBe('ok');
+
+      // Simulate a Core restart against the same database files.
+      await app?.close();
+      app = await createApp(
+        join(dir, 'sessions.sqlite'),
+        join(dir, 'memories.sqlite'),
+      );
+
+      // The durable result answers; nothing re-executes, no LLM call.
+      chatWithTools.mockClear();
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe(
+        (turn.body as ConversationResponse).reply,
+      );
+      expect(chatWithTools).not.toHaveBeenCalled();
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual([
+        'teal local',
+        'mock reply',
+        'find teal',
+        (turn.body as ConversationResponse).reply,
+      ]);
+    });
+
+    it('resumes a parked approval across restart', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      // Restart while the approval is still pending.
+      await app?.close();
+      app = await createApp(
+        join(dir, 'sessions.sqlite'),
+        join(dir, 'memories.sqlite'),
+      );
+
+      // The approval survived; the resumed run continues planning.
+      chatWithTools.mockResolvedValueOnce(finalText('renamed after restart'));
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).status).toBe('ok');
+
+      const sessions = await request(http()).get('/core/sessions').expect(200);
+      const renamed = (
+        sessions.body as { sessions: { sessionId: string; title?: string }[] }
+      ).sessions.find((s) => s.sessionId === sessionId);
+      expect(renamed?.title).toBe('Ward map');
     });
   });
 });
