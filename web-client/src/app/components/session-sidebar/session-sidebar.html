@@ -1,0 +1,46 @@
+<aside class="sidebar" aria-label="Session history">
+  <div class="search-row">
+    <svg lucideSearch [size]="14" aria-hidden="true"></svg>
+    <input
+      #searchBox
+      id="session-search"
+      type="search"
+      placeholder="Search sessions..."
+      autocomplete="off"
+      aria-label="Search sessions"
+      (input)="onSearch(searchBox.value)"
+    />
+  </div>
+  <button type="button" class="new-btn" (click)="startNewSession()">+ New</button>
+  <div class="session-list" role="listbox" aria-label="Sessions">
+    @if (searchResults() !== null) {
+      @for (result of searchResults()!; track result.messageId) {
+        <button
+          type="button"
+          role="option"
+          [attr.aria-selected]="result.sessionId === activeSessionId()"
+          [class.active]="result.sessionId === activeSessionId()"
+          class="session-item"
+          (click)="openSession(result.sessionId)"
+        >
+          <span class="title">{{ result.content }}</span>
+          <span class="meta">{{ result.role }} · {{ shortId(result.sessionId) }} · {{ formatDate(result.createdAt) }}</span>
+        </button>
+      }
+    } @else {
+      @for (session of sessions(); track session.sessionId) {
+        <button
+          type="button"
+          role="option"
+          [attr.aria-selected]="session.sessionId === activeSessionId()"
+          [class.active]="session.sessionId === activeSessionId()"
+          class="session-item"
+          (click)="openSession(session.sessionId)"
+        >
+          <span class="title">{{ sessionTitle(session) }}</span>
+          <span class="meta">{{ session.messageCount }} msgs · {{ formatDate(session.updatedAt) }}</span>
+        </button>
+      }
+    }
+  </div>
+</aside>

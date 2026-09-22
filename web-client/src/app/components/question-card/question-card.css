@@ -1,0 +1,63 @@
+.question-card {
+  border: 1px solid #4b7a94;
+  background: #1a2229;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.question-card .question {
+  font-weight: 600;
+}
+
+.question-card .options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.5rem;
+}
+
+.question-card label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  cursor: pointer;
+}
+
+.question-card input[type='text'] {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid #444;
+  border-radius: 0.5rem;
+  background: #111;
+  color: #eee;
+  font: inherit;
+  font-size: 0.8125rem;
+  width: 100%;
+  outline: none;
+}
+
+.question-card .row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.question-card button {
+  padding: 0.375rem 0.75rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: #6f8f82;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.question-card button:hover {
+  background: #82a598;
+}
+
+.question-card .dismiss {
+  background: #555;
+}

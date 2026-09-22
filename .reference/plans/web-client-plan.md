@@ -1,6 +1,6 @@
 # Web Client — Implementation Plan (`web-client/`)
 
-Status: Phase 0 complete (2026-09-22) — verified `tsc`, `eslint`, 15 unit tests, `ng build` (prod) green; committed on `dev`, no push.
+Status: Phase 1 complete (2026-09-22) — full test-client parity. Verified `tsc`, `eslint`, 40 unit tests, `ng build` (prod) green, live integration 9/10 REST checks + live LLM turn + browser E2E 6/6; committed on `dev`, no push.
 Scope: `web-client/` only. No changes to `core/` in this plan.
 Source-of-truth hierarchy: `.reference/web-client-blueprint.md` → this plan → code.
 Branch: `dev`. Commits per-phase, NO pushing.
@@ -80,45 +80,43 @@ Status: complete (2026-09-22).
 
 ## 5. Phase 1 — Chat parity with `test-client.html`
 
-Goal: Angular client does everything `test-client.html:418-1057` does, with identical stream/resume semantics.
+Status: complete (2026-09-22).
 
-### Models (`src/app/models/`)
+### Models (`src/app/models/`) — done
 
-- [ ] `message.ts`, `session.ts`, `approval.ts`, `clarification.ts`
-- [ ] `stream-event.ts` (`meta | token | tool | approval | done | error`)
-- [ ] `turn-outcome.ts` (`ok | approval_required | processing` + `command | tool | approval | outcome | result`)
+- [x] `message.ts` (`ChatMessage` + `excludedFromContext`), `session.ts` (`SessionSummary`, `SessionSearchResult`, history), `approval.ts`, `clarification.ts`
+- [x] `stream-event.ts` (`meta | token | tool | approval | done | error` + `parseStreamBlock` / `splitStreamBlocks` extracted for tests)
+- [x] `turn-outcome.ts` (`ok | approval_required | processing` + `command | tool | approval | outcome | result`)
 
-### Services (`providedIn: root`, `inject()`, signals, no `effect()`)
+### Services — done (names adjusted from plan)
 
-- [ ] `conversation.service.ts` — `POST ${SERVER_URL}${CONVERSATION_ENDPOINT}/stream` + `/resume-stream` via `fetch` + `ReadableStream` SSE parser (`\n\n` framing, `event:`/`data:` lines, `JSON.parse` per event).
-- [ ] `session.service.ts` — `GET conversation/:id`, `GET sessions?limit=50`, `GET sessions/search?q=&limit=50`.
-- [ ] `approval.service.ts` — `GET approvals?sessionId=&status=pending`, `POST :id/approve|reject|cancel {sessionId}`.
-- [ ] `clarification.service.ts` — `GET clarifications?sessionId=&status=pending`, `POST :id/answer {sessionId,answer}`, `POST :id/cancel {sessionId}`.
-- [ ] Sidebar/search/approval/question failures stay auxiliary: log + keep chat usable (same policy as test client `catch {}` blocks).
+- [x] `core-api.service.ts` — `GET`/`POST` JSON wrapper with error-body surfacing + URL join
+- [x] `conversation-stream.service.ts` — `POST .../stream` + `/resume-stream` via `fetch` + `ReadableStream` (`\n\n` framing, `event:`/`data:` lines, `JSON.parse` per event)
+- [x] `session-data.service.ts` — `SessionService` (`GET conversation/:id`, `GET sessions?limit=50`, `GET sessions/search?q=&limit=50`), `ApprovalService` (`GET approvals?sessionId=&status=pending`, `POST :id/approve|reject|cancel {sessionId}`), `ClarificationService` (`GET clarifications?...`, `POST :id/answer {sessionId,answer}`, `POST :id/cancel {sessionId}`)
+- [x] Sidebar/search/approval/question failures stay auxiliary: `try/catch` + chat keeps working (same policy as test client)
 
-### Components (one dir + separate `.ts/.html/.css` each; `OnPush`; `input()/output()`; `@if/@for`; `class`/`style` bindings; Reactive forms)
+### Components — done (one dir + separate `.ts/.html/.css` each; `OnPush`; `input()/output()`; `@if/@for`; `class` bindings; Reactive forms)
 
-- [ ] `session-sidebar/` — list (title/preview, `messageCount · updatedAt`), 250ms-debounce search, `+ New`, active highlight, short-id + date formatting.
-- [ ] `message-list/` — user/assistant/system bubbles, `excludedFromContext` dim + `/undo` title, auto-scroll, `Running tool <name>...` progress, `Tool ran: <name>` trace line, system-notice rendering for `command` results.
-- [ ] `composer/` — textarea, Enter=send / Shift+Enter=newline, busy-disable with `...` state, autofocus.
-- [ ] `approval-card/` — action + description + Approve/Reject; `question-card/` — question + radio options (first checked) or free-text + Answer/Dismiss.
+- [x] `session-sidebar/` — list (title/preview, `messageCount · updatedAt`), 250ms-debounce search, `+ New`, active highlight, short-id + date formatting, `role=listbox/option` + `aria-selected`
+- [x] `message-list/` — user/assistant/system bubbles, `excludedFromContext` dim + `/undo` title, pending bubble with `typing` class, `role=log` + `aria-live=polite` (auto-scroll owned by `chat-ui-component`)
+- [x] `composer/` — Reactive-form textarea, Enter=send / Shift+Enter=newline, busy-disable with `...` state, autofocus
+- [x] `approval-card/` — action + description + Approve/Reject emitting `{id, decision}`; `question-card/` — question + radio options (first checked by default) or free-text + Answer/Dismiss
 
-### State (`conversation-store`, signals)
+### State (`conversation-store`, signals) — done
 
-- [ ] Owns `sessionId`, `messages`, `busy`, `pendingResumes: Map<approvalId, {requestId, sessionId}>`.
-- [ ] `meta` sets `sessionId`; tokens stream into the pending bubble; `approval` event triggers early approval refresh; `done` without tokens fills `reply`.
-- [ ] Resolve (approve or reject) → refresh approvals → consume `pendingResumes` → `resume-stream` exactly once.
-- [ ] `processing` → bounded re-`resume-stream` (≤10 attempts, 1s delay); beyond bound append `(still running — send a message to retry)`.
-- [ ] `command.kind === 'session'` (`/new`, `/fork`) replaces pane with the single system bubble.
-- [ ] After every send AND every resume: refresh sessions + approvals + questions.
+- [x] Owns `sessionId`, `messages`, `busy`, `sessions`, `searchQuery`/`searchResults`, `approvals`, `clarifications`, `pendingText`/`pendingTyping`, `pendingResumes: Map<approvalId, {requestId, sessionId}>`
+- [x] `meta` sets `sessionId`; tokens stream into the pending bubble; `approval` event triggers early approval refresh; `done` without tokens fills `reply`
+- [x] Resolve (approve or reject) → refresh approvals → consume `pendingResumes` → `resume-stream` exactly once
+- [x] `processing` → bounded re-`resume-stream` (≤10 attempts, 1s delay via `scheduleProcessingPoll`); beyond bound commits `(still running — send a message to retry)`
+- [x] `command.kind === 'session'` (`/new`, `/fork`) replaces pane with the single system bubble; other commands commit as system notices
+- [x] After every send AND every resume: refresh sessions + approvals + questions
+- [x] `chat-ui-component/` shell wires sidebar + scroll-host (pin-to-bottom, 48px stickiness) + approvals/questions + composer; session header + `+ New`
 
-### Verify
+### Verify — done
 
-Phase 1 verification (unit + live integration + `tsc`/`eslint`) is required before the Phase 1 commit.
-
-- [ ] Unit where useful: SSE parser (split chunks, `\n\n` boundaries, `meta/token/done/error`), store transitions (approval-park → resume-once, processing bound, session-command reset). `ng test` green.
-- [ ] Integration vs live `localhost:3000`: send → streamed tokens → history persists; sessions list/search; approval approve+reject both resume; clarification answer+cancel; `/health`, `/new` command rendering. No evidence committed without a live run.
-- [ ] `tsc` + `eslint` clean — commit, NO push.
+- [x] Unit: SSE parser (token/meta/done-approval, keep-alive/malformed skip, split-chunk reassembly), store transitions (token stream commit, approval-park → resume-once on approve AND reject, processing bound + retry hint, session-command reset, tool trace line, error surfacing), component specs (chat shell, composer trim/reset/empty-guard, approval approve+reject, question first-option-default/free-text-trim/dismiss). `ng test`: 13 files / 40 tests green.
+- [x] Integration vs live `localhost:3000` (core `nest start --watch`, OpenRouter `deepseek-v4-flash-0731`): REST script 9/10 — sessions list, history, search, `done`+`Status: healthy` on `/health` stream, approvals shape + create/approve lifecycle, clarifications shape + create/answer lifecycle. The 1 miss is expected server behavior, not a client gap: `/health` emits `done` with NO `meta` (command path only emits `meta` when the dispatch yields a session id — `conversation.service.ts:676-685`), which the client handles (no `meta` → keep current session). Live LLM turn: `meta` + 2×`token` + `done status:ok`, reply echoed exactly, history round-trip shows 2 messages. `/new` returns `command.kind: 'session'` with a fresh session id. Browser E2E (playwright-core + bundled Chromium, real `ng serve` app): 6/6 — app loads, sidebar lists 19 live sessions, send → streamed reply in transcript, session id assigned, search returns results, `/health` renders system notice.
+- [x] `tsc` + `eslint` clean, `ng build --configuration production` inside budgets — commit, NO push. `playwright-core` added as devDependency for the browser E2E path (reused in Phase 3).
 
 ## 6. Phase 2 — Tabs (functional where server exists, placeholders elsewhere)
 
