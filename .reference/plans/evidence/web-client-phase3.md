@@ -106,6 +106,44 @@ labelled, all terminal). No `core/` files touched.
 - Tablist arrow-key pattern: links are keyboard-accessible; roving
   tabindex deferred (noted in code via plain nav).
 
+## 7. Post-Phase 3: `docker compose up -d` repair (2026-09-23)
+
+Symptom: `web-client-1` crashed on boot with an esbuild `onLoad` error
+followed by a Go deadlock trace. Investigation (all read-only except the
+fix files below; no `core/` changes):
+
+1. **Wrong-arch binaries (fixed).** No `.dockerignore` existed, so
+   `COPY . .` overwrote the image's Linux `node_modules` with the host's —
+   host `@esbuild/darwin-arm64` vs needed `linux-arm64`. Fix:
+   `web-client/.dockerignore` (excludes `node_modules`, `dist`,
+   `.angular`, logs, editor dirs). Verified: image now contains only
+   `linux-arm64`.
+2. **OOM, then SIGKILL (design change).** With correct binaries, the dev
+   server died with `Worker terminated … JS heap out of memory
+   [plugin angular-vite-optimize-deps]` and, with a raised heap cap, the
+   container was SIGKilled. Root cause is host capacity, not code: the
+   Docker Desktop VM is 2 GB total and already over-committed
+   (`CommitLimit 2057080 kB`, `Committed_AS 2151328 kB`). Fix:
+   multi-stage `Dockerfile` (node build → `nginx:alpine` static serve,
+   `try_files` SPA fallback on :4200). Runtime drops from ~1 GB+ to ~15 MB.
+3. **In-container AOT build exceeds the 2 GB VM (open).** `ng build`
+   peaks ~1.0–1.4 GB heap (local mac peak RSS: 589 MB; musl + cold cache
+   + GC pressure inflate it in-container). Heap caps 1024/1280/1440 all
+   die in `[plugin angular-compiler]`; 1536 cannot even spawn
+   (`cannot allocate memory`). Pruning 8.6 GB of build cache did not move
+   `Committed_AS`. Stopping core would free only ~38 MB — not worth the
+   disruption with a concurrent agent active.
+4. **Serving path validated.** `nginx.conf` verified against
+   `nginx:alpine` with stub content: `/` → 200, `/skills` → 200 with
+   `index.html` fallback. Compose healthcheck (`GET /` → 200) is
+   compatible; no compose changes needed.
+
+Remaining step (needs a host with >2 GB Docker memory, or a Docker
+Desktop RAM bump to ≥4 GB): `docker compose build web-client &&
+docker compose up -d` then `curl :4200` → 200 and healthy status.
+`npm ci` was tried and reverted: the committed lockfile is out of sync
+(`Missing: @emnapi/* from lock file`), so the image keeps `npm install`.
+
 ## 6. Files changed (all under `web-client/`)
 
 - `src/styles.css` — contrast tokens (deep sage, badge texts, dark error
