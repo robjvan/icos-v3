@@ -12,7 +12,7 @@
   gap: 0.75rem;
 }
 
-.tab-card-header h2 {
+.tab-card-header h1 {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
@@ -26,7 +26,7 @@
   padding: 0.2rem 0.5rem;
   border-radius: 9999px;
   border: 1px solid var(--accent-amber);
-  color: var(--accent-amber-light);
+  color: var(--badge-amber-text);
 }
 
 .description {

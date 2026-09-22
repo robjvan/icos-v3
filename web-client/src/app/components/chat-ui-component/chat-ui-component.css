@@ -37,7 +37,7 @@
   padding: 0.5rem 0.875rem;
   border: 0;
   border-radius: 0.5rem;
-  background: var(--accent-sage);
+  background: var(--accent-sage-deep);
   color: #fff;
   font-weight: 600;
   font-size: 0.8125rem;
@@ -45,7 +45,7 @@
 }
 
 .new-btn:hover {
-  background: var(--accent-sage-light);
+  background: var(--accent-sage-deep-hover);
 }
 
 .chat-body {

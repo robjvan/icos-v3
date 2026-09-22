@@ -1,13 +1,17 @@
 <div
-  class="text-sm flex flex-row h-8 items-center justify-between bg-(--bg-primary) text-gray-500"
+  role="contentinfo"
+  aria-label="System status (placeholder values, no live health endpoint)"
+  class="text-sm flex flex-row h-8 items-center justify-between bg-(--bg-primary) text-(--text-secondary)"
 >
   <p class="ms-3">
     ICOS |
-    <span [class]="serverStatusClass()">{{ serverStatus }}</span>
+    <span [class]="serverStatusClass()" title="Placeholder — no live health endpoint">{{
+      serverStatus
+    }}</span>
   </p>
   <div class="flex gap-8">
-    <p>Context: {{ currentContext }}</p>
-    <p class="">CPU: {{ cpuUsage }} % | RAM: {{ ramUsage }} %</p>
+    <p title="Placeholder — no live health endpoint">Context: {{ currentContext }}</p>
+    <p class="" title="Placeholder — no live health endpoint">CPU: {{ cpuUsage }} % | RAM: {{ ramUsage }} %</p>
   </div>
   <div class="flex items-center gap-3 me-3">
     <button

@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  computed,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import {
   LucideActivity,
@@ -96,9 +104,15 @@ const ALL_TABS: readonly NavTab[] = [
   templateUrl: './nav-tabs-component.html',
   styleUrl: './nav-tabs-component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: {
+    '(keydown.Escape)': 'closeAbout()',
+  },
 })
 export class NavTabsComponent {
   private readonly themeService = inject(ThemeService);
+
+  private readonly aboutTrigger = viewChild<ElementRef<HTMLButtonElement>>('aboutTrigger');
+  private readonly aboutClose = viewChild<ElementRef<HTMLButtonElement>>('aboutClose');
 
   readonly tabs = ALL_TABS;
   readonly theme = this.themeService.theme;
@@ -113,10 +127,17 @@ export class NavTabsComponent {
 
   openAbout(): void {
     this.aboutOpen.set(true);
+    // The dialog renders on the next change-detection pass; focus its Close
+    // button once present so keyboard users land inside the modal.
+    setTimeout(() => this.aboutClose()?.nativeElement.focus({ preventScroll: true }), 0);
   }
 
   closeAbout(): void {
+    if (!this.aboutOpen()) {
+      return;
+    }
     this.aboutOpen.set(false);
+    this.aboutTrigger()?.nativeElement.focus({ preventScroll: true });
   }
 
   tabIcon(tab: NavTab): NavTabIcon {

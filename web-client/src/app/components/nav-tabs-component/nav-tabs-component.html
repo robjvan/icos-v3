@@ -1,13 +1,12 @@
 <nav class="tab-bar" aria-label="Primary">
   <span class="font-semibold tracking-widest me-4">ICOS</span>
-  <div class="tab-scroll" role="tablist">
+  <div class="tab-scroll">
     @for (tab of tabs; track tab.path) {
       <a
         [routerLink]="tab.path"
         routerLinkActive="active"
         [routerLinkActiveOptions]="{ exact: tab.exact }"
         class="tab-link"
-        role="tab"
       >
         @switch (tabIcon(tab)) {
           @case ('chat') {
@@ -70,7 +69,7 @@
   <a routerLink="/client-settings" class="icon-btn" aria-label="Client settings">
     <svg lucideSettings [size]="16" aria-hidden="true"></svg>
   </a>
-  <button type="button" class="icon-btn" aria-label="About ICOS" (click)="openAbout()">
+  <button #aboutTrigger type="button" class="icon-btn" aria-label="About ICOS" (click)="openAbout()">
     <svg lucideInfo [size]="16" aria-hidden="true"></svg>
   </button>
   <button type="button" (click)="toggleTheme()" [attr.aria-label]="themeLabel()" class="theme-btn">
@@ -88,7 +87,7 @@
       (click)="$event.stopPropagation()"
     >
       <app-about-modal />
-      <button type="button" class="modal-close" (click)="closeAbout()">Close</button>
+      <button #aboutClose type="button" class="modal-close" (click)="closeAbout()">Close</button>
     </div>
   </div>
 }

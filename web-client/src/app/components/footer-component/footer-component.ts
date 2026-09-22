@@ -52,9 +52,10 @@ export class FooterComponent implements OnDestroy {
   );
 
   readonly serverStatusClass = computed(() =>
+    // Badge-grade text colors: both pass 4.5:1 on either theme background.
     this.serverStatus === ServerStatus.OFFLINE
       ? 'text-(--accent-red)'
-      : 'text-(--accent-sage)',
+      : 'text-(--badge-sage-text)',
   );
 
   ngOnDestroy(): void {

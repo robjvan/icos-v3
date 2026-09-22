@@ -1,6 +1,11 @@
 # Web Client — Implementation Plan (`web-client/`)
 
-Status: Phase 2 complete (2026-09-22) — 16 lazy tab routes; skills (live read-only), tools (frontend-only prefs), memory (live ledger read), client/server settings functional; 10 honest placeholders; `ng test` 33 files / 87 tests, `tsc` + `eslint` clean, prod build in budgets, browser tab smoke 22/22 vs live core; committed on `dev`, no push. (Phase 1 evidence retained below.)
+Status: Phase 3 complete (2026-09-23) — composer upload placeholder, search final
+pass, focus/ARIA hardening, contrast 24/24, AXE 12/12 clean, unit 34/98,
+E2E 20/20 vs live core, prod build 274.53 kB in budgets. Docker compose-up
+blocked (daemon down) — documented. Evidence:
+`.reference/plans/evidence/web-client-phase3.md`. Committed on `dev`, no push.
+(Phase 1–2 evidence retained below.)
 Scope: `web-client/` only. No changes to `core/` in this plan.
 Source-of-truth hierarchy: `.reference/web-client-blueprint.md` → this plan → code.
 Branch: `dev`. Commits per-phase, NO pushing.
@@ -153,13 +158,38 @@ Status: complete (2026-09-22). Rebuilt once after an accidental `web-client/` de
 
 ## 7. Phase 3 — Polish, a11y, ship
 
-- [ ] Keep the docked dashboard layout + card-style tabs as-is ("floating windows" dropped 2026-09-22); system health footer bar (still static + `TODO`); file-upload placeholder input on composer (images/docs/audio-video, badged `server unimplemented`); session search/filters final pass.
-- [ ] i18n: `en` only; `fr/es/pa/zh` deferred. LTR only.
-- [ ] WCAG 2.1 AA: focus management (session switch, modal open/close, send/busy), contrast check on both themes, ARIA on tabs/cards/modals/composer. AXE pass required.
-- [ ] Responsive: ≤700px sidebar stacks (mirror `test-client.html:348-379` breakpoints).
-- [ ] E2E important flows: new → send → stream → switch session → approve → resume → answer clarification. (`ng e2e` harness is not scaffolded — pick one in this phase if time allows, else document manual script as evidence.)
-- [ ] Production: `ng build` inside budgets (`angular.json:33-44`); `docker compose up --build` → `core:3000` healthy → `web-client:4200` serves 200.
-- [ ] Evidence to `.reference/plans/evidence/` (unit + e2e + live run per repo ground rules) — commit, NO push.
+Status: complete (2026-09-23). Full evidence in
+`.reference/plans/evidence/web-client-phase3.md`.
+
+- [x] Docked dashboard layout + card-style tabs kept ("floating" dropped
+  2026-09-22); footer stays static + `TODO` (now with `contentinfo`
+  landmark, placeholder titles, passing status color); composer has a
+  file-upload placeholder (attach button, images/docs/audio/video accept,
+  local-only chips + `server unimplemented` badge, never uploaded);
+  session search has clear button, live result counts, sibling empty
+  states (out of the listbox per axe).
+- [x] i18n: `en` only (`lang="en"`); LTR only. Other locales deferred.
+- [x] WCAG 2.1 AA: focus returns to composer after open/new/send-complete
+  (deferred past CD so busy-disable can't swallow it); about dialog
+  focuses Close on open, Escape closes, focus returns to trigger;
+  computed contrast audit 24/24 pairs pass (deep-sage buttons, badge
+  text tokens, dark error red, light secondary fix); **AXE 12/12 pages
+  clean, 0 violations** (chat/skills/tools/memory/agents/client-settings
+  × dark/light; fixes: listbox children, `<main>` landmark, one `h1` per
+  route, plain-link nav, radiogroup nesting).
+- [x] Responsive: 390px verified — no horizontal overflow, sidebar stacks
+  (`flex-direction: column`); tab bar scrolls horizontally.
+- [x] E2E 20/20 (playwright-core Chromium, `ng serve` + live core):
+  new → send → stream → refocus → switch → search → clear → `/health` →
+  seeded approve → seeded answer → attach/remove → theme toggle →
+  dialog focus in/out → responsive. Parked-turn resume stays
+  unit-covered. Ephemeral `phase3-e2e-probe` rows only, all terminal.
+- [x] Production: `ng build` 274.53 kB initial (500 kB warn / 1 MB error);
+  `docker compose up --build` **blocked — Docker daemon down**, and no
+  `core/` rebuild attempted (concurrent agent active). `Dockerfile` /
+  `docker-compose.yml` unchanged.
+- [x] Evidence committed (this plan + `evidence/web-client-phase3.md`) —
+  commit, NO push.
 
 ## 8. Execution order
 

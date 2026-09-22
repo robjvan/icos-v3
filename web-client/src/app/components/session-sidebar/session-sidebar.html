@@ -8,9 +8,16 @@
       placeholder="Search sessions..."
       autocomplete="off"
       aria-label="Search sessions"
+      [value]="searchValue()"
       (input)="onSearch(searchBox.value)"
     />
+    @if (searchValue() !== '') {
+      <button type="button" class="clear-btn" (click)="clearSearch()" aria-label="Clear search">
+        <svg lucideX [size]="14" aria-hidden="true"></svg>
+      </button>
+    }
   </div>
+  <p class="result-count" aria-live="polite">{{ resultSummary() }}</p>
   <button type="button" class="new-btn" (click)="startNewSession()">+ New</button>
   <div class="session-list" role="listbox" aria-label="Sessions">
     @if (searchResults() !== null) {
@@ -43,4 +50,9 @@
       }
     }
   </div>
+  @if (showNoMatches()) {
+    <p class="empty">No matches. Try a different search.</p>
+  } @else if (showNoSessions()) {
+    <p class="empty">No sessions yet. Start a new conversation.</p>
+  }
 </aside>

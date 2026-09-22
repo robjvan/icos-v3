@@ -48,4 +48,23 @@ describe('NavTabsComponent', () => {
     component.closeAbout();
     expect(component.aboutOpen()).toBe(false);
   });
+
+  it('should focus the dialog close button on open and return focus on close', async () => {
+    component.openAbout();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.ownerDocument.activeElement?.textContent).toContain('Close');
+    component.closeAbout();
+    fixture.detectChanges();
+    expect(compiled.ownerDocument.activeElement?.getAttribute('aria-label')).toBe('About ICOS');
+  });
+
+  it('should ignore close requests when the dialog is already closed', () => {
+    expect(component.aboutOpen()).toBe(false);
+    component.closeAbout();
+    expect(component.aboutOpen()).toBe(false);
+  });
 });

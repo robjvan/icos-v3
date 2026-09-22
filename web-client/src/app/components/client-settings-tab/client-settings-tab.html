@@ -1,6 +1,6 @@
 <section class="tab-pane" aria-label="Client settings">
   <div class="tab-pane-header">
-    <h2>Client settings</h2>
+    <h1>Client settings</h1>
     <span class="badge">frontend-only</span>
   </div>
   <dl class="settings">
@@ -14,26 +14,28 @@
     </div>
     <div>
       <dt>Theme</dt>
-      <dd>{{ themeLabel() }}</dd>
-      <dd class="theme-row" role="radiogroup" aria-label="Theme">
-        <label>
-          <input
-            type="radio"
-            name="client-theme"
-            [checked]="theme() === 'dark'"
-            (change)="setTheme('dark')"
-          />
-          Dark
-        </label>
-        <label>
-          <input
-            type="radio"
-            name="client-theme"
-            [checked]="theme() === 'light'"
-            (change)="setTheme('light')"
-          />
-          Light
-        </label>
+      <dd>
+        {{ themeLabel() }}
+        <div class="theme-row" role="radiogroup" aria-label="Theme">
+          <label>
+            <input
+              type="radio"
+              name="client-theme"
+              [checked]="theme() === 'dark'"
+              (change)="setTheme('dark')"
+            />
+            Dark
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="client-theme"
+              [checked]="theme() === 'light'"
+              (change)="setTheme('light')"
+            />
+            Light
+          </label>
+        </div>
       </dd>
     </div>
   </dl>

@@ -27,7 +27,7 @@
   padding: 0.375rem 0.75rem;
   border: 0;
   border-radius: 0.5rem;
-  background: var(--accent-sage);
+  background: var(--accent-sage-deep);
   color: #fff;
   font-weight: 600;
   font-size: 0.75rem;
@@ -35,9 +35,9 @@
 }
 
 .approval-card button:hover {
-  background: var(--accent-sage-light);
+  background: var(--accent-sage-deep-hover);
 }
 
 .approval-card .reject {
-  background: var(--accent-red);
+  background: var(--accent-red-deep);
 }

@@ -28,6 +28,6 @@ describe('TabPlaceholder', () => {
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('.badge')?.textContent).toContain('server unimplemented');
     expect(compiled.querySelector('.milestone')?.textContent).toContain('M9/M14');
-    expect(compiled.querySelector('h2')?.textContent).toContain('Agents');
+    expect(compiled.querySelector('h1')?.textContent).toContain('Agents');
   });
 });

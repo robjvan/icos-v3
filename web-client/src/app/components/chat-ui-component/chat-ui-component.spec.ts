@@ -21,9 +21,9 @@ describe('ChatUiComponent', () => {
       pendingText: () => null,
       pendingTyping: () => false,
       refreshSessions: vi.fn().mockResolvedValue(undefined),
-      openSession: vi.fn(),
+      openSession: vi.fn().mockResolvedValue(undefined),
       newSession: vi.fn(),
-      sendMessage: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
       resolveApproval: vi.fn(),
       answerQuestion: vi.fn(),
       cancelQuestion: vi.fn(),
@@ -53,5 +53,16 @@ describe('ChatUiComponent', () => {
 
   it('should label a null session as new', () => {
     expect(component.sessionLabel()).toBe('new session');
+  });
+
+  it('should refocus the composer after opening a session', async () => {
+    fixture.detectChanges();
+    component.openSession('s1');
+    await fixture.whenStable();
+    // Focus is deferred a macrotask past change detection.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await fixture.whenStable();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.ownerDocument.activeElement?.id).toBe('composer-input');
   });
 });
