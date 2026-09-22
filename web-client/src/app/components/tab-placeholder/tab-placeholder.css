@@ -1,0 +1,43 @@
+.tab-card {
+  margin: 1rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.75rem;
+  background: var(--bg-card);
+}
+
+.tab-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.tab-card-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--accent-amber);
+  color: var(--accent-amber-light);
+}
+
+.description {
+  margin: 0.75rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.milestone {
+  margin: 0.75rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}

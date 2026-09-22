@@ -22,14 +22,30 @@ describe('NavTabsComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it('should expose the chat tab', () => {
-    expect(component.tabs).toHaveLength(1);
+  it('should expose all sixteen blueprint tabs starting with chat', () => {
+    expect(component.tabs).toHaveLength(16);
     expect(component.tabs[0]?.label).toBe('Chat');
+    expect(component.tabs.map((tab) => tab.path)).toContain('skills');
+    expect(component.tabs.map((tab) => tab.path)).toContain('identity');
   });
 
   it('should toggle the theme label with the current theme', () => {
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('button')?.getAttribute('aria-label')).toContain('theme');
+    const themeButton = [...compiled.querySelectorAll('button')].find((button) =>
+      button.getAttribute('aria-label')?.includes('theme'),
+    );
+    expect(themeButton?.getAttribute('aria-label')).toContain('theme');
+  });
+
+  it('should open and close the about dialog', () => {
+    expect(component.aboutOpen()).toBe(false);
+    component.openAbout();
+    expect(component.aboutOpen()).toBe(true);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelector('[role="dialog"]')).not.toBeNull();
+    component.closeAbout();
+    expect(component.aboutOpen()).toBe(false);
   });
 });

@@ -1,0 +1,77 @@
+<section class="tab-pane" aria-label="Skills">
+  <div class="tab-pane-header">
+    <h2>Skills</h2>
+    <span class="badge">read-only · filesystem is the writer</span>
+    <span class="grow"></span>
+    <button type="button" (click)="refresh()">Refresh</button>
+  </div>
+
+  @if (error() !== null) {
+    <p class="error" role="alert">{{ error() }}</p>
+  }
+
+  @if (!enabled()) {
+    <app-tab-placeholder
+      title="Skills disabled"
+      description="The server reports skills are disabled (SKILLS_ENABLED=false)."
+      milestone="M7"
+    />
+  }
+
+  <form class="discover" [formGroup]="searchForm" (ngSubmit)="discover()" aria-label="Discover skills">
+    <svg lucideSearch [size]="14" aria-hidden="true"></svg>
+    <input
+      type="search"
+      formControlName="query"
+      placeholder="Discover skills..."
+      autocomplete="off"
+      aria-label="Discover skills"
+    />
+    <button type="submit">Discover</button>
+  </form>
+
+  @if (matches().length > 0) {
+    <ul class="match-list" aria-label="Discovery matches">
+      @for (match of matches(); track match.name) {
+        <li>
+          <button type="button" (click)="openSkill(match.name)">
+            {{ match.name }} <span class="mono score">{{ match.score }}</span>
+          </button>
+        </li>
+      }
+    </ul>
+  }
+
+  <ul class="skill-list" aria-label="Skill catalog">
+    @for (skill of skills(); track skill.name) {
+      <li>
+        <button type="button" (click)="openSkill(skill.name)">
+          <span class="name">{{ skill.name }}</span>
+          <span class="version mono">{{ skill.version }}</span>
+          <span class="description">{{ skill.description }}</span>
+        </button>
+      </li>
+    } @empty {
+      @if (error() === null) {
+        <li class="empty">No skills in the catalog.</li>
+      }
+    }
+  </ul>
+
+  @if (skippedCount() > 0) {
+    <p class="skipped">{{ skippedCount() }} skill(s) skipped by server validation.</p>
+  }
+
+  @if (detail() !== null) {
+    <article class="skill-detail" [attr.aria-label]="'Skill ' + detail()!.name">
+      <div class="skill-detail-header">
+        <h3>{{ detail()!.name }}</h3>
+        <span class="mono version">{{ detail()!.version }}</span>
+        <span class="grow"></span>
+        <button type="button" (click)="closeSkill()">Close</button>
+      </div>
+      <p class="description">{{ detail()!.description }}</p>
+      <pre class="body">{{ detail()!.body }}</pre>
+    </article>
+  }
+</section>

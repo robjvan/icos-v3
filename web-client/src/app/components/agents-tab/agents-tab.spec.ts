@@ -1,0 +1,29 @@
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+
+import { AgentsTab } from './agents-tab';
+
+describe('AgentsTab', () => {
+  let component: AgentsTab;
+  let fixture: ComponentFixture<AgentsTab>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [AgentsTab],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(AgentsTab);
+    component = fixture.componentInstance;
+    await fixture.whenStable();
+  });
+
+  it('should create', () => {
+    expect(component).toBeTruthy();
+  });
+
+  it('should render the unimplemented badge with no fake data', () => {
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelector('.badge')?.textContent).toContain('server unimplemented');
+    expect(compiled.querySelector('.milestone')?.textContent).toContain('TODO(server milestone');
+  });
+});

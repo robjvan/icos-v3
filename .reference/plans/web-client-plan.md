@@ -1,6 +1,6 @@
 # Web Client — Implementation Plan (`web-client/`)
 
-Status: Phase 1 complete (2026-09-22) — full test-client parity. Verified `tsc`, `eslint`, 40 unit tests, `ng build` (prod) green, live integration 9/10 REST checks + live LLM turn + browser E2E 6/6; committed on `dev`, no push.
+Status: Phase 2 complete (2026-09-22) — 16 lazy tab routes; skills (live read-only), tools (frontend-only prefs), memory (live ledger read), client/server settings functional; 10 honest placeholders; `ng test` 33 files / 87 tests, `tsc` + `eslint` clean, prod build in budgets, browser tab smoke 22/22 vs live core; committed on `dev`, no push. (Phase 1 evidence retained below.)
 Scope: `web-client/` only. No changes to `core/` in this plan.
 Source-of-truth hierarchy: `.reference/web-client-blueprint.md` → this plan → code.
 Branch: `dev`. Commits per-phase, NO pushing.
@@ -120,14 +120,32 @@ Status: complete (2026-09-22).
 
 ## 6. Phase 2 — Tabs (functional where server exists, placeholders elsewhere)
 
-Goal: blueprint tab bar with lazy routes; only skills/tools get live logic, everything else is an honest placeholder.
+Status: complete (2026-09-22). Rebuilt once after an accidental `web-client/` deletion; restored from git + re-applied the working-tree diff (16-tab nav spec, settings-modal content, routes spec).
 
-- [ ] `nav-tabs-component/` lazy routes: `chat | agents | tools | skills | files | memory | kb | sensors | mcp | models | cron | metrics | client-settings | server-settings | comms | identity`.
-- [ ] `skills-tab/` (functional read): `GET skills`, `discover?q=`, `active?sessionId=`, `:name` body view. No CRUD controls — API has no mutations; any CRUD affordance ships disabled with `filesystem is the writer` note. Auto-approve-style prefs (if any) are `localStorage`-only with `server unimplemented` badge.
-- [ ] `tools-tab/` (local prefs): tool list shown from observed `tool` stream events / static registry copy; per-tool auto-approve toggles persist to `localStorage` only, badged `frontend-only — server unimplemented`.
-- [ ] Placeholders (routed cards with `TODO(server milestone)`, no fake data): `agents-tab/` (M9/M14 persona), `models-tab/` (set-model, unimplemented), `cron-tab/` (M17), `files-tab/` (generated files, persistence unimplemented), `kb-tab/` incl. upload (M21), `sensors-tab/` (M18), `memory-tab/` (candidates list via `GET memory-candidates` read is allowed; ranking/consolidation M10–12 placeholder), `mcp-tab/` (M13), `comms-tab/` (SMS/Email/Discord, M16), `metrics-tab/` (token usage today/7d/30d/90d/custom + wakatime-style per-project — placeholder until server exposes usage), `client-settings-tab/` (`SERVER_URL`, theme), `server-settings-tab/` (read-only note), `identity-tab/` (SOUL.md/persona/system prompt, M14).
-- [ ] `settings-modal/` (client settings) + `about-modal/` content. `guards/` stays empty (blueprint auth: none).
-- [ ] Verify: `ng test`, lazy-route smoke (every tab loads, placeholders render badges), `tsc` + `eslint` clean — commit, NO push.
+### Routes + nav — done
+
+- [x] `app.routes.ts`: dashboard shell with 16 lazy `loadComponent` children — `'' (chat) | agents | tools | skills | files | memory | kb | sensors | mcp | models | cron | metrics | client-settings | server-settings | comms | identity`; `** → ''` fallback kept. Shell route drops `pathMatch: 'full'` so children match.
+- [x] `nav-tabs-component/`: all 16 tabs with lucide icons in a horizontally scrolling `tablist`, active highlighting per-tab (`exact: true`), settings shortcut, about-dialog button, theme toggle. About dialog renders `AboutModal` in a modal backdrop (`role=dialog`, `aria-modal`).
+- [x] `app.routes.spec.ts`: asserts all 16 child routes declare `loadComponent` + resolves the chat chunk. (Full per-route dynamic-import loop removed — importing all 16 chunks in one test exceeded the 5s vitest timeout.)
+
+### Functional tabs — done
+
+- [x] `skills-tab/` (live read): `GET skills` catalog + `discover?q=` + `:name` body view; blank-query guard; disabled-state placeholder when `enabled: false`; skipped-count note; `filesystem is the writer` badge; no CRUD controls (API has no mutations).
+- [x] `tools-tab/` (local prefs): static registry copy (`session.search` no-approval, `session.rename` approval-required — mirrors `core/src/tools/tool-registry.ts`); per-tool auto-approve checkboxes persist to `localStorage icos-tool-auto-approve`; `frontend-only · server unimplemented` badge + hint that chat approvals still follow server policy.
+- [x] `memory-tab/` (live read): `GET memory-candidates` ledger with optional session filter; kind/subject/predicate/object + confidence/importance/stability + extractor + provenance rendering; `ranking unimplemented (M10–M12)` badge.
+- [x] `client-settings-tab/`: compiled-in `SERVER_URL` display + theme radio group through `ThemeService`.
+- [x] `server-settings-tab/`: read-only placeholder (core exposes no settings endpoint; env-var note).
+
+### Placeholders — done (routed cards with `TODO(server milestone)`, no fake data)
+
+- [x] Shared `tab-placeholder/` (`title`, `description`, `milestone` inputs; `server unimplemented` badge): `agents-tab/` (M9/M14), `models-tab/` (model selection endpoint, unplanned), `cron-tab/` (M17), `files-tab/` (generated-file persistence, unplanned), `kb-tab/` (M21), `sensors-tab/` (M18), `mcp-tab/` (M13), `comms-tab/` (M16), `metrics-tab/` (usage/metrics endpoint, unplanned), `identity-tab/` (M14).
+- [x] `settings-modal/` (quick theme + server-URL display) + `about-modal/` content (capability summary + plan pointer). `guards/` stays empty (blueprint auth: none).
+
+### Verify — done
+
+- [x] `ng test`: 33 files / 87 tests green (new: 3 service specs, 5 functional-tab specs, 10 placeholder specs, placeholder badge spec, routes spec, expanded nav spec).
+- [x] Lazy-route smoke via browser (playwright-core + bundled Chromium, real `ng serve` + live core): 22/22 — app loads, nav lists 16 tabs, all 16 routes render their marker, skills tab lists 2 live skills, memory ledger renders, tools tab lists 2 tools with the frontend-only badge.
+- [x] `tsc` + `eslint` clean (one fix: unnecessary type assertion in tools spec), `ng build --configuration production` inside budgets — commit, NO push.
 
 ## 7. Phase 3 — Polish, a11y, ship
 

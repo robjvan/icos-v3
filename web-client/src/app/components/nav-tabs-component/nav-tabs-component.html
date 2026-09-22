@@ -1,29 +1,94 @@
-<nav class="flex flex-row h-12 items-center gap-1 px-3 border-b border-(--border-subtle)" aria-label="Primary">
+<nav class="tab-bar" aria-label="Primary">
   <span class="font-semibold tracking-widest me-4">ICOS</span>
-  @for (tab of tabs; track tab.path) {
-    <a
-      [routerLink]="tab.path"
-      routerLinkActive="active"
-      [routerLinkActiveOptions]="{ exact: true }"
-      class="tab-link"
-      aria-current="page"
-    >
-      @switch (tabIcon(tab)) {
-        @case ('chat') {
-          <svg lucideMessageSquare [size]="16" aria-hidden="true"></svg>
+  <div class="tab-scroll" role="tablist">
+    @for (tab of tabs; track tab.path) {
+      <a
+        [routerLink]="tab.path"
+        routerLinkActive="active"
+        [routerLinkActiveOptions]="{ exact: tab.exact }"
+        class="tab-link"
+        role="tab"
+      >
+        @switch (tabIcon(tab)) {
+          @case ('chat') {
+            <svg lucideMessageSquare [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('agents') {
+            <svg lucideBot [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('tools') {
+            <svg lucideWrench [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('skills') {
+            <svg lucideSparkles [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('files') {
+            <svg lucideFolder [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('memory') {
+            <svg lucideBrain [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('kb') {
+            <svg lucideBookOpen [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('sensors') {
+            <svg lucideRadio [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('mcp') {
+            <svg lucidePlug [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('models') {
+            <svg lucideCpu [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('cron') {
+            <svg lucideClock [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('metrics') {
+            <svg lucideActivity [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('client-settings') {
+            <svg lucideSettings [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('server-settings') {
+            <svg lucideServer [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('comms') {
+            <svg lucideMail [size]="16" aria-hidden="true"></svg>
+          }
+          @case ('identity') {
+            <svg lucideUser [size]="16" aria-hidden="true"></svg>
+          }
+          @default {
+            <svg lucideGauge [size]="16" aria-hidden="true"></svg>
+          }
         }
-        @case ('settings') {
-          <svg lucideSettings [size]="16" aria-hidden="true"></svg>
-        }
-        @default {
-          <svg lucideInfo [size]="16" aria-hidden="true"></svg>
-        }
-      }
-      {{ tab.label }}
-    </a>
-  }
+        {{ tab.label }}
+      </a>
+    }
+  </div>
   <span class="grow"></span>
+  <a routerLink="/client-settings" class="icon-btn" aria-label="Client settings">
+    <svg lucideSettings [size]="16" aria-hidden="true"></svg>
+  </a>
+  <button type="button" class="icon-btn" aria-label="About ICOS" (click)="openAbout()">
+    <svg lucideInfo [size]="16" aria-hidden="true"></svg>
+  </button>
   <button type="button" (click)="toggleTheme()" [attr.aria-label]="themeLabel()" class="theme-btn">
     {{ theme() === 'dark' ? 'Light' : 'Dark' }}
   </button>
 </nav>
+
+@if (aboutOpen()) {
+  <div class="modal-backdrop" (click)="closeAbout()">
+    <div
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="About ICOS"
+      (click)="$event.stopPropagation()"
+    >
+      <app-about-modal />
+      <button type="button" class="modal-close" (click)="closeAbout()">Close</button>
+    </div>
+  </div>
+}

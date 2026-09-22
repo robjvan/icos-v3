@@ -1,1 +1,15 @@
-<p>Settings land in Phase 2 (client settings tab + modal).</p>
+<section aria-label="Quick settings">
+  <h2>Settings</h2>
+  <p class="server mono">{{ serverUrl }}</p>
+  <div class="theme-row" role="radiogroup" aria-label="Theme">
+    <label>
+      <input type="radio" name="modal-theme" [checked]="theme() === 'dark'" (change)="setTheme('dark')" />
+      Dark
+    </label>
+    <label>
+      <input type="radio" name="modal-theme" [checked]="theme() === 'light'" (change)="setTheme('light')" />
+      Light
+    </label>
+  </div>
+  <p class="hint">Full client settings live on the Client tab.</p>
+</section>

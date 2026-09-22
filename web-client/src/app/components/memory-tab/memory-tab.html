@@ -1,0 +1,49 @@
+<section class="tab-pane" aria-label="Memory">
+  <div class="tab-pane-header">
+    <h2>Memory</h2>
+    <span class="badge">evidence ledger · ranking unimplemented (M10–M12)</span>
+    <span class="grow"></span>
+    <button type="button" (click)="refresh()">Refresh</button>
+  </div>
+
+  <form class="filter" [formGroup]="filterForm" (ngSubmit)="refresh()" aria-label="Filter by session">
+    <svg lucideSearch [size]="14" aria-hidden="true"></svg>
+    <input
+      type="search"
+      formControlName="sessionId"
+      placeholder="Filter by session id (optional)..."
+      autocomplete="off"
+      aria-label="Filter by session id"
+    />
+    <button type="submit">Apply</button>
+    <button type="button" (click)="clearFilter()">Clear</button>
+  </form>
+
+  @if (ledger.error() !== null) {
+    <p class="error" role="alert">{{ ledger.error() }}</p>
+  }
+
+  <ul class="candidate-list" aria-label="Memory candidates">
+    @for (candidate of ledger.candidates(); track candidate.id) {
+      <li class="candidate">
+        <span class="kind">{{ candidate.kind }}</span>
+        <span class="statement">
+          {{ candidate.subject }} {{ candidate.predicate }} {{ candidate.object }}
+        </span>
+        <span class="meta mono">
+          conf {{ candidate.confidence }} · imp {{ candidate.importance }} · stab
+          {{ candidate.stability }} · {{ candidate.extractorModel }} /
+          {{ candidate.extractorVersion }}
+        </span>
+        <span class="meta mono">
+          {{ candidate.source.sessionId.slice(0, 8) }} · msg {{ candidate.source.messageId }} ·
+          {{ candidate.extractedAt }}
+        </span>
+      </li>
+    } @empty {
+      @if (ledger.error() === null) {
+        <li class="empty">No memory candidates in the ledger.</li>
+      }
+    }
+  </ul>
+</section>
