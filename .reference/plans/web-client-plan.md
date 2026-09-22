@@ -21,7 +21,7 @@ Explicit non-goals (deferred to next major phase per blueprint):
 - [x] API base: fix `src/constants.ts` to `${SERVER_URL}/core/...` direct CORS. No `proxy.conf.json`, no `environments/` files in Phase 0–1.
 - [x] Phase 1 scope: full test-client parity (chat / sessions / approvals / clarifications); Phase 2+ adds real tabs; everything without a server backing it is a routed placeholder card.
 - [x] Skills tab reads the live read-only API; tools auto-approve toggles persist to `localStorage` as frontend-only prefs with a `server unimplemented` badge.
-- [x] No mockup: use `test-client.html` layout + blueprint floating-windows / both-themes description.
+- [x] No mockup: use `test-client.html` layout + both-themes description. The blueprint's "floating windows" line was dropped 2026-09-22 — the docked dashboard layout + card-style tabs ship as-is.
 - [x] PrimeNG allowed selectively; default is Tailwind + `@lucide/angular` (already installed). Install PrimeNG only when a Phase 2 widget proves the need.
 - [x] Health footer + health tab: static placeholders with a `TODO(core health endpoint)` in code. No HTTP `/health` exists — health today is only the `/health` slash-command text via the conversation API, and this plan adds no `core/` endpoints.
 
@@ -147,9 +147,13 @@ Status: complete (2026-09-22). Rebuilt once after an accidental `web-client/` de
 - [x] Lazy-route smoke via browser (playwright-core + bundled Chromium, real `ng serve` + live core): 22/22 — app loads, nav lists 16 tabs, all 16 routes render their marker, skills tab lists 2 live skills, memory ledger renders, tools tab lists 2 tools with the frontend-only badge.
 - [x] `tsc` + `eslint` clean (one fix: unnecessary type assertion in tools spec), `ng build --configuration production` inside budgets — commit, NO push.
 
+### Chat theming fix (pre-Phase 3, 2026-09-22)
+
+- [x] Chat stylesheets ported from dark-only hex to theme vars: new `--bg-input`, `--bg-user-bubble`, `--bg-assistant-bubble`, `--border-default`, `--border-strong` tokens in `styles.css` (dark preserves the old look; light uses white inputs, sage user bubbles, white assistant cards); `chat-ui-component`, `message-list`, `session-sidebar`, `composer`, `approval-card`, `question-card` converted; dashboard `hr` uses `--border-default`. Assistant bubbles in light mode are white on lilac-mist — accepted, revisit if contrast feels off. Verified `tsc` + `eslint` clean, 33 files / 87 tests green, prod build in budgets.
+
 ## 7. Phase 3 — Polish, a11y, ship
 
-- [ ] Floating disconnected windows + gap layout per blueprint; system health footer bar (still static + `TODO`); file-upload placeholder input on composer (images/docs/audio-video, badged `server unimplemented`); session search/filters final pass.
+- [ ] Keep the docked dashboard layout + card-style tabs as-is ("floating windows" dropped 2026-09-22); system health footer bar (still static + `TODO`); file-upload placeholder input on composer (images/docs/audio-video, badged `server unimplemented`); session search/filters final pass.
 - [ ] i18n: `en` only; `fr/es/pa/zh` deferred. LTR only.
 - [ ] WCAG 2.1 AA: focus management (session switch, modal open/close, send/busy), contrast check on both themes, ARIA on tabs/cards/modals/composer. AXE pass required.
 - [ ] Responsive: ≤700px sidebar stacks (mirror `test-client.html:348-379` breakpoints).

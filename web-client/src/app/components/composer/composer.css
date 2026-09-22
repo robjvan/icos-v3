@@ -1,8 +1,9 @@
 .composer {
-  border-top: 1px solid #333;
+  border-top: 1px solid var(--border-default);
   padding: 0.75rem;
   display: flex;
   gap: 0.625rem;
+  background: var(--bg-secondary);
 }
 
 .composer textarea {
@@ -11,16 +12,16 @@
   min-height: 48px;
   max-height: 160px;
   padding: 0.75rem;
-  border: 1px solid #444;
+  border: 1px solid var(--border-strong);
   border-radius: 0.5rem;
-  background: #111;
-  color: #eee;
+  background: var(--bg-input);
+  color: var(--text-primary);
   font: inherit;
   outline: none;
 }
 
 .composer textarea:focus {
-  border-color: #666;
+  border-color: var(--accent-sage);
 }
 
 .composer button {
@@ -30,14 +31,14 @@
   padding: 0 1rem;
   border: 0;
   border-radius: 0.5rem;
-  background: #6f8f82;
+  background: var(--accent-sage);
   color: #fff;
   font-weight: 600;
   cursor: pointer;
 }
 
 .composer button:hover {
-  background: #82a598;
+  background: var(--accent-sage-light);
 }
 
 .composer button:disabled {

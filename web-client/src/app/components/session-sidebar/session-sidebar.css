@@ -1,10 +1,11 @@
 .sidebar {
   width: 260px;
   flex-shrink: 0;
-  border-right: 1px solid #333;
+  border-right: 1px solid var(--border-default);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: var(--bg-secondary);
 }
 
 .search-row {
@@ -13,9 +14,9 @@
   gap: 0.5rem;
   margin: 0.75rem;
   padding: 0.625rem 0.75rem;
-  border: 1px solid #444;
+  border: 1px solid var(--border-strong);
   border-radius: 0.5rem;
-  background: #111;
+  background: var(--bg-input);
   color: var(--text-secondary);
 }
 
@@ -25,7 +26,7 @@
   border: 0;
   outline: none;
   background: transparent;
-  color: #eee;
+  color: var(--text-primary);
   font: inherit;
   font-size: 0.8125rem;
 }
@@ -35,7 +36,7 @@
   padding: 0.5rem 0.875rem;
   border: 0;
   border-radius: 0.5rem;
-  background: #6f8f82;
+  background: var(--accent-sage);
   color: #fff;
   font-weight: 600;
   font-size: 0.8125rem;
@@ -43,7 +44,7 @@
 }
 
 .new-btn:hover {
-  background: #82a598;
+  background: var(--accent-sage-light);
 }
 
 .session-list {
@@ -61,7 +62,7 @@
   align-items: stretch;
   text-align: start;
   padding: 0.625rem 0.75rem;
-  border: 1px solid #333;
+  border: 1px solid var(--border-default);
   border-radius: 0.5rem;
   background: transparent;
   color: inherit;
@@ -71,12 +72,12 @@
 }
 
 .session-item:hover {
-  border-color: #555;
+  border-color: var(--border-strong);
 }
 
 .session-item.active {
-  border-color: #6f8f82;
-  background: #202624;
+  border-color: var(--accent-sage);
+  background: var(--bg-glass);
 }
 
 .session-item .title {
@@ -86,7 +87,7 @@
 }
 
 .session-item .meta {
-  color: #777;
+  color: var(--text-secondary);
   font-size: 0.6875rem;
   font-family: monospace;
 }
@@ -95,7 +96,7 @@
   .sidebar {
     width: 100%;
     border-right: 0;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border-default);
     max-height: 180px;
   }
 }

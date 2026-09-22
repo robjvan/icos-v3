@@ -1,6 +1,6 @@
 .approval-card {
-  border: 1px solid #8a6d3b;
-  background: #26221a;
+  border: 1px solid var(--accent-amber);
+  background: var(--bg-card);
   border-radius: 0.5rem;
   padding: 0.625rem 0.75rem;
   font-size: 0.8125rem;
@@ -8,10 +8,11 @@
 
 .approval-card .action {
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .approval-card .description {
-  color: #bbb;
+  color: var(--text-secondary);
   margin-top: 0.25rem;
   white-space: pre-wrap;
 }
@@ -26,7 +27,7 @@
   padding: 0.375rem 0.75rem;
   border: 0;
   border-radius: 0.5rem;
-  background: #6f8f82;
+  background: var(--accent-sage);
   color: #fff;
   font-weight: 600;
   font-size: 0.75rem;
@@ -34,9 +35,9 @@
 }
 
 .approval-card button:hover {
-  background: #82a598;
+  background: var(--accent-sage-light);
 }
 
 .approval-card .reject {
-  background: #6e3b3b;
+  background: var(--accent-red);
 }

@@ -18,17 +18,20 @@
 
 .user {
   align-self: flex-end;
-  background: #315b52;
+  background: var(--bg-user-bubble);
+  color: #fff;
 }
 
 .assistant {
   align-self: flex-start;
-  background: #292929;
+  background: var(--bg-assistant-bubble);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
 }
 
 .system {
   align-self: center;
-  color: #777;
+  color: var(--text-secondary);
   font-size: 0.75rem;
 }
 
