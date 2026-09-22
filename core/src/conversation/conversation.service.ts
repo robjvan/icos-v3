@@ -9,6 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { CORE_CONFIG } from '../config';
 import type { CoreConfig } from '../config';
 import { CommandDispatcher } from '../commands/command-dispatcher';
@@ -39,7 +40,11 @@ import type { ToolName } from '../tools/tool-registry';
 import { AgentRunRepository } from '../agent/agent-run.repository';
 import type { AgentRun } from '../agent/agent-run.repository';
 import { observationFromRecord } from '../agent/observation';
-import { buildPlanningBlock } from '../agent/planning-context';
+import {
+  assembleTurnMessages,
+  buildPlanningBlock,
+} from '../agent/planning-context';
+import type { PlanningProgress } from '../agent/planning-context';
 import type {
   AgentTerminalState,
   AgentTransientState,
@@ -215,7 +220,8 @@ export class ConversationService {
     // parks, text, and invalid proposals end the turn as before.
     const runId = this.startRun(id, message);
     const startedAt = Date.now();
-    let context = turn.toolMessages;
+    const pairs: LlmMessage[] = [];
+    const priorActions: string[] = [];
     let lastTool: ToolSummary | undefined;
     let toolSteps = 0;
     let boundHit = false;
@@ -231,6 +237,17 @@ export class ConversationService {
           this.config.agentMaxTurnDurationMs,
         );
       this.transitionRun(runId, 'reasoning');
+      const context = this.assembleStep(
+        turn,
+        message,
+        turn.descriptors,
+        pairs,
+        {
+          stepsUsed: step,
+          toolCallsUsed: toolSteps,
+          priorActions,
+        },
+      );
       let proposal: LlmResult;
       try {
         proposal = await this.llm.chatWithTools({
@@ -242,6 +259,18 @@ export class ConversationService {
       } catch (err) {
         this.finishRun(runId, 'failed', { reason: 'turn_error', toolSteps });
         throw this.providerError(err);
+      }
+      if (proposal.kind === 'tool_calls') {
+        priorActions.push(...proposal.toolCalls.map((call) => call.name));
+      }
+      // M9j skip before validation/execution: repeats never reach
+      // the ledger, spawn no approval, and cost no tool execution.
+      const skipped = this.skipRepeatedCall(context, proposal, finalAttempt);
+      if (skipped) {
+        this.transitionRun(runId, 'action_proposed');
+        this.stepRun(runId, requestId, 0);
+        pairs.push(skipped.assistant, skipped.tool);
+        continue;
       }
       if (proposal.kind === 'tool_calls') {
         this.transitionRun(runId, 'action_proposed');
@@ -274,7 +303,7 @@ export class ConversationService {
       // back so the model can correct its arguments within budget.
       const rejection = this.validationFailurePair(record);
       if (rejection && !finalAttempt) {
-        context = [...context, rejection.assistant, ...rejection.tools];
+        pairs.push(rejection.assistant, ...rejection.tools);
         continue;
       }
       const pair = this.continuationPair(record);
@@ -284,7 +313,7 @@ export class ConversationService {
       }
       if (pair && !finalAttempt) {
         lastTool = { invocationId: pair.invocationId, name: pair.name };
-        context = [...context, pair.assistant, pair.tool];
+        pairs.push(pair.assistant, pair.tool);
         continue;
       }
       if (pair && finalAttempt) {
@@ -424,11 +453,25 @@ export class ConversationService {
     const allowedTools = descriptors.map((descriptor) => descriptor.name);
     const limits = stored.limits;
     const startedAt = Date.now();
-    let context: LlmMessage[] = [
-      ...record.input.context,
-      entry.assistant,
-      entry.tool,
-    ];
+    // M9k: split the frozen turn context so the system head rebuilds
+    // every round with fresh progress; the rest stays durable. Prompt
+    // and catalog refresh from current config; skill bodies stay frozen
+    // with the turn that loaded them.
+    const prompt = this.config.systemPrompt.trim();
+    const catalog = this.skills.buildCatalogBlock().trim();
+    const resumeBase = [prompt, catalog].filter((part) => part !== '');
+    const baseSystemText =
+      resumeBase.length > 0 ? resumeBase.join('\n\n') : undefined;
+    const [oldHead, ...oldRest] = record.input.context;
+    const rest = oldHead?.role === 'system' ? oldRest : record.input.context;
+    const approval = stored.approvalId
+      ? {
+          id: stored.approvalId,
+          decision: record.state === 'succeeded' ? 'approved' : record.state,
+        }
+      : undefined;
+    const pairs: LlmMessage[] = [entry.assistant, entry.tool];
+    const priorActions: string[] = [entry.toolSummary.name];
     let lastTool: ToolSummary | undefined = entry.toolSummary;
     let newExecutions = 0;
     for (let step = stored.iterationCount; ; step++) {
@@ -437,6 +480,18 @@ export class ConversationService {
         stored.toolCallCount + newExecutions >= limits.maxToolSteps ||
         turnDeadlineExceeded(startedAt, Date.now(), limits.maxTurnDurationMs);
       this.transitionRun(storedId, 'reasoning');
+      const context = this.assembleStep(
+        { baseSystem: baseSystemText, rest },
+        userText,
+        descriptors,
+        pairs,
+        {
+          stepsUsed: step,
+          toolCallsUsed: stored.toolCallCount + newExecutions,
+          priorActions,
+          approval,
+        },
+      );
       let proposal: LlmResult;
       try {
         proposal = await this.llm.chatWithTools({
@@ -453,10 +508,24 @@ export class ConversationService {
         throw this.providerError(err);
       }
       if (proposal.kind === 'tool_calls') {
+        priorActions.push(...proposal.toolCalls.map((call) => call.name));
+      }
+      // M9j skip before validation/execution: repeats never reach
+      // the ledger, spawn no approval, and cost no tool execution.
+      // The step still records its request id so the run audit stays
+      // complete (observations skip ids with no ledger row).
+      const stepRequestId = randomUUID();
+      const skipped = this.skipRepeatedCall(context, proposal, finalAttempt);
+      if (skipped) {
+        this.transitionRun(storedId, 'action_proposed');
+        this.stepRun(storedId, stepRequestId, 0);
+        pairs.push(skipped.assistant, skipped.tool);
+        continue;
+      }
+      if (proposal.kind === 'tool_calls') {
         this.transitionRun(storedId, 'action_proposed');
         this.transitionRun(storedId, 'executing');
       }
-      const stepRequestId = randomUUID();
       let stepRecord: ToolExecutionRecord;
       try {
         stepRecord = await this.tools.consume(
@@ -485,7 +554,7 @@ export class ConversationService {
       // back so the model can correct its arguments within budget.
       const rejection = this.validationFailurePair(stepRecord);
       if (rejection && !finalAttempt) {
-        context = [...context, rejection.assistant, ...rejection.tools];
+        pairs.push(rejection.assistant, ...rejection.tools);
         continue;
       }
       const pair = this.continuationPair(stepRecord);
@@ -497,7 +566,7 @@ export class ConversationService {
       }
       if (pair && !finalAttempt) {
         lastTool = { invocationId: pair.invocationId, name: pair.name };
-        context = [...context, pair.assistant, pair.tool];
+        pairs.push(pair.assistant, pair.tool);
         continue;
       }
       if (pair && finalAttempt) {
@@ -635,7 +704,8 @@ export class ConversationService {
       let boundHit = false;
       let deadlineHit = false;
       try {
-        let context = turn.toolMessages;
+        const pairs: LlmMessage[] = [];
+        const priorActions: string[] = [];
         let currentRequestId = requestId;
         let lastTool: ToolSummary | undefined;
         for (let step = 0; ; step++) {
@@ -648,6 +718,17 @@ export class ConversationService {
               this.config.agentMaxTurnDurationMs,
             );
           this.transitionRun(runId, 'reasoning');
+          const context = this.assembleStep(
+            turn,
+            message,
+            turn.descriptors,
+            pairs,
+            {
+              stepsUsed: step,
+              toolCallsUsed: toolSteps,
+              priorActions,
+            },
+          );
           let proposal: LlmResult;
           try {
             proposal = await this.llm.chatStreamWithTools(
@@ -666,6 +747,23 @@ export class ConversationService {
               toolSteps,
             });
             throw err;
+          }
+          if (proposal.kind === 'tool_calls') {
+            priorActions.push(...proposal.toolCalls.map((call) => call.name));
+          }
+          // M9j skip before validation/execution: repeats never reach
+          // the ledger, spawn no approval, and cost no tool execution.
+          const skipped = this.skipRepeatedCall(
+            context,
+            proposal,
+            finalAttempt,
+          );
+          if (skipped) {
+            this.transitionRun(runId, 'action_proposed');
+            currentRequestId = randomUUID();
+            this.stepRun(runId, currentRequestId, 0);
+            pairs.push(skipped.assistant, skipped.tool);
+            continue;
           }
           if (proposal.kind === 'tool_calls') {
             this.transitionRun(runId, 'action_proposed');
@@ -699,7 +797,7 @@ export class ConversationService {
           // failure back so the model can correct within budget.
           const rejection = this.validationFailurePair(record);
           if (rejection && !finalAttempt) {
-            context = [...context, rejection.assistant, ...rejection.tools];
+            pairs.push(rejection.assistant, ...rejection.tools);
             continue;
           }
           const pair = this.continuationPair(record);
@@ -715,7 +813,7 @@ export class ConversationService {
               name: pair.name,
               state: 'succeeded',
             });
-            context = [...context, pair.assistant, pair.tool];
+            pairs.push(pair.assistant, pair.tool);
             currentRequestId = randomUUID();
             continue;
           }
@@ -902,11 +1000,24 @@ export class ConversationService {
         const sink: StreamSink = {
           onToken: (content) => emit({ type: 'token', content }),
         };
-        let context: LlmMessage[] = [
-          ...record.input.context,
-          entry.assistant,
-          entry.tool,
-        ];
+        // M9k: frozen rest plus a rebuilt head every round.
+        const prompt = this.config.systemPrompt.trim();
+        const catalog = this.skills.buildCatalogBlock().trim();
+        const resumeBase = [prompt, catalog].filter((part) => part !== '');
+        const baseSystemText =
+          resumeBase.length > 0 ? resumeBase.join('\n\n') : undefined;
+        const [oldHead, ...oldRest] = record.input.context;
+        const rest =
+          oldHead?.role === 'system' ? oldRest : record.input.context;
+        const approval = stored.approvalId
+          ? {
+              id: stored.approvalId,
+              decision:
+                record.state === 'succeeded' ? 'approved' : record.state,
+            }
+          : undefined;
+        const pairs: LlmMessage[] = [entry.assistant, entry.tool];
+        const priorActions: string[] = [entry.toolSummary.name];
         let lastTool: ToolSummary | undefined = entry.toolSummary;
         let newExecutions = 0;
         for (let step = stored.iterationCount; ; step++) {
@@ -919,6 +1030,18 @@ export class ConversationService {
               limits.maxTurnDurationMs,
             );
           this.transitionRun(storedId, 'reasoning');
+          const context = this.assembleStep(
+            { baseSystem: baseSystemText, rest },
+            userText,
+            descriptors,
+            pairs,
+            {
+              stepsUsed: step,
+              toolCallsUsed: stored.toolCallCount + newExecutions,
+              priorActions,
+              approval,
+            },
+          );
           let proposal: LlmResult;
           try {
             proposal = await this.llm.chatStreamWithTools(
@@ -939,10 +1062,26 @@ export class ConversationService {
             throw err;
           }
           if (proposal.kind === 'tool_calls') {
+            priorActions.push(...proposal.toolCalls.map((call) => call.name));
+          }
+          // M9j skip before validation/execution: repeats never reach
+          // the ledger, spawn no approval, and cost no tool execution.
+          const stepRequestId = randomUUID();
+          const skipped = this.skipRepeatedCall(
+            context,
+            proposal,
+            finalAttempt,
+          );
+          if (skipped) {
+            this.transitionRun(storedId, 'action_proposed');
+            this.stepRun(storedId, stepRequestId, 0);
+            pairs.push(skipped.assistant, skipped.tool);
+            continue;
+          }
+          if (proposal.kind === 'tool_calls') {
             this.transitionRun(storedId, 'action_proposed');
             this.transitionRun(storedId, 'executing');
           }
-          const stepRequestId = randomUUID();
           let stepRecord: ToolExecutionRecord;
           try {
             stepRecord = await this.tools.consume(
@@ -971,7 +1110,7 @@ export class ConversationService {
           // failure back so the model can correct within budget.
           const rejection = this.validationFailurePair(stepRecord);
           if (rejection && !finalAttempt) {
-            context = [...context, rejection.assistant, ...rejection.tools];
+            pairs.push(rejection.assistant, ...rejection.tools);
             continue;
           }
           const pair = this.continuationPair(stepRecord);
@@ -989,7 +1128,7 @@ export class ConversationService {
               name: pair.name,
               state: 'succeeded',
             });
-            context = [...context, pair.assistant, pair.tool];
+            pairs.push(pair.assistant, pair.tool);
             continue;
           }
           if (pair && finalAttempt) {
@@ -1106,6 +1245,71 @@ export class ConversationService {
    * execution (park, text, invalid, unfinished) ends the turn through
    * the standard render path.
    */
+  /**
+   * M9j repetition guard: count prior identical attempts (tool name +
+   * deep-equal args) by scanning assistant tool-call messages in
+   * context. Multi-call proposals are not eligible — they fail closed
+   * as invalid instead. Zero means "not a repeat".
+   */
+  private priorAttempts(
+    context: readonly LlmMessage[],
+    name: ToolName,
+    args: Record<string, unknown>,
+  ): number {
+    let attempts = 0;
+    for (const message of context) {
+      if (message.role !== 'assistant' || !('toolCalls' in message)) {
+        continue;
+      }
+      for (const prior of message.toolCalls) {
+        if (prior.name === name && isDeepStrictEqual(prior.args, args)) {
+          attempts += 1;
+        }
+      }
+    }
+    return attempts;
+  }
+
+  /**
+   * M9j skip: when a single call repeats a prior attempt and the turn
+   * is not yet forced, return the echo pair (call plus duplicate
+   * marker) instead of submitting to M8 — no ledger row, no
+   * execution, no approval. Undefined when the proposal must flow to
+   * validation/execution normally (including under a forced text
+   * attempt, where the parser rejects calls outright).
+   */
+  private skipRepeatedCall(
+    context: readonly LlmMessage[],
+    proposal: LlmResult,
+    finalAttempt: boolean,
+  ): { assistant: LlmMessage; tool: LlmMessage } | undefined {
+    if (
+      proposal.kind !== 'tool_calls' ||
+      proposal.toolCalls.length !== 1 ||
+      finalAttempt
+    ) {
+      return undefined;
+    }
+    const call = proposal.toolCalls[0];
+    const priorAttempts = this.priorAttempts(context, call.name, call.args);
+    if (priorAttempts === 0) return undefined;
+    return {
+      assistant: {
+        role: 'assistant',
+        content: proposal.content,
+        toolCalls: [{ ...call }],
+      },
+      tool: {
+        role: 'tool',
+        callId: call.id,
+        content: JSON.stringify({
+          ok: false,
+          failure: { code: 'repeated_call', priorAttempts },
+        }),
+      },
+    };
+  }
+
   private continuationPair(record: ToolExecutionRecord):
     | {
         invocationId: string;
@@ -1229,13 +1433,44 @@ export class ConversationService {
     return undefined;
   }
 
+  /**
+   * M9k per-step context: the static base plus a fresh planning frame
+   * (goal, tool policies, budget, progress so far). Rebuilt every
+   * proposal round so remaining budget never goes stale.
+   */
+  private assembleStep(
+    turn: {
+      baseSystem: string | undefined;
+      rest: LlmMessage[];
+    },
+    goal: string,
+    descriptors: LlmToolRequest['tools'],
+    pairs: LlmMessage[],
+    progress: PlanningProgress,
+  ): LlmMessage[] {
+    const block = buildPlanningBlock({
+      goal,
+      tools: descriptors,
+      maxToolSteps: this.config.agentMaxToolSteps,
+      maxIterations: this.config.agentMaxIterations,
+      progress,
+    });
+    return assembleTurnMessages({
+      baseSystem: turn.baseSystem,
+      systemExtra: `${TOOL_STEP_INSTRUCTION}\n\n${block}`,
+      rest: turn.rest,
+      pairs,
+    });
+  }
+
   private async prepareTurn(
     sessionId: string,
     message: string,
   ): Promise<{
     history: ChatMessage[];
     skills: ResolvedTurnSkills;
-    toolMessages: LlmMessage[];
+    baseSystem: string | undefined;
+    rest: LlmMessage[];
     descriptors: LlmToolRequest['tools'];
     allowedTools: ToolName[];
   }> {
@@ -1253,25 +1488,17 @@ export class ConversationService {
     ];
     const descriptors = this.registry.list().slice();
     const allowedTools = descriptors.map((descriptor) => descriptor.name);
-    // Steer one-call-per-step tool use and frame the turn goal.
-    // buildContext leads with the system message whenever a prompt or
-    // catalog exists; otherwise stage one.
-    const block = buildPlanningBlock({
-      goal: message,
-      tools: descriptors,
-      maxToolSteps: this.config.agentMaxToolSteps,
-      maxIterations: this.config.agentMaxIterations,
-    });
-    const systemExtra = `${TOOL_STEP_INSTRUCTION}\n\n${block}`;
+    // Split the static system head (prompt plus catalog) from the rest
+    // so M9k rebuilds the planning frame every proposal round instead
+    // of letting step counts go stale.
     const [head, ...tail] = toolMessages;
-    const stepped: LlmMessage[] =
-      head?.role === 'system'
-        ? [{ ...head, content: `${head.content}\n\n${systemExtra}` }, ...tail]
-        : [{ role: 'system', content: systemExtra }, ...toolMessages];
+    const baseSystem = head?.role === 'system' ? head.content : undefined;
+    const rest = head?.role === 'system' ? tail : toolMessages;
     return {
       history,
       skills,
-      toolMessages: stepped,
+      baseSystem,
+      rest,
       descriptors,
       allowedTools,
     };

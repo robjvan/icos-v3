@@ -824,6 +824,7 @@ describe('Conversation (e2e)', () => {
         tools: new ToolRegistry().list(),
         maxToolSteps: MAX_TOOL_STEPS,
         maxIterations: MAX_ITERATIONS,
+        progress: { stepsUsed: 0, toolCallsUsed: 0, priorActions: [] },
       })}`,
       'first',
       'mock reply',
@@ -1120,7 +1121,10 @@ describe('Conversation (e2e)', () => {
   });
 
   describe('tool turns', () => {
-    function searchCall(query = 'teal', limit = 20) {
+    // NOTE: mock call ids must be unique per proposal like a real
+    // provider's. Reused ids collide in context validation
+    // (invalid_context), which is correct fail-closed behavior.
+    function searchCall(query = 'teal', limit = 20, id = 'model-call-1') {
       const rawArguments = JSON.stringify({ query, limit });
       return {
         kind: 'tool_calls',
@@ -1128,7 +1132,7 @@ describe('Conversation (e2e)', () => {
         model: 'test-model',
         toolCalls: [
           {
-            id: 'model-call-1',
+            id,
             name: 'session.search',
             version: 1,
             rawArguments,
@@ -1219,6 +1223,46 @@ describe('Conversation (e2e)', () => {
       ).toEqual(['teal local', 'mock reply', 'find teal', 'teal is local']);
     });
 
+    it('skips repeated calls without re-executing', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(finalText('deduped answer'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      expect((turn.body as ConversationResponse).reply).toBe('deduped answer');
+
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const rows = db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM tool_requests
+             WHERE session_id = ? AND state = 'succeeded'`,
+          )
+          .get(sessionId) as { n: number };
+        // One execution despite two identical proposals.
+        expect(rows.n).toBe(1);
+      } finally {
+        db.close();
+      }
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find teal', 'deduped answer']);
+    });
+
     it('recovers from a rejected proposal with corrected arguments', async () => {
       const first = await request(http())
         .post('/core/conversation')
@@ -1267,9 +1311,13 @@ describe('Conversation (e2e)', () => {
       const sessionId = (first.body as ConversationResponse).sessionId;
 
       // The model keeps searching, so the step bound forces finalization
-      // through resume(); the final call itself goes down.
+      // through resume(); the final call itself goes down. Distinct
+      // call ids like a real provider (reused ids would collide in
+      // context validation).
       for (let i = 0; i < 6; i++) {
-        chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+        chatWithTools.mockResolvedValueOnce(
+          searchCall('teal', 20, `call-${i}`),
+        );
       }
       chatWithTools.mockRejectedValueOnce(new Error('provider down'));
       const turn = await request(http())
@@ -1627,9 +1675,12 @@ describe('Conversation (e2e)', () => {
       const sessionId = (first.body as ConversationResponse).sessionId;
 
       // The model keeps searching, so the step bound finalizes through
-      // resume(); the final call itself goes down.
+      // resume(); the final call itself goes down. Distinct call ids
+      // like a real provider (reused ids would collide in validation).
       for (let i = 0; i < 6; i++) {
-        chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+        chatWithTools.mockResolvedValueOnce(
+          searchCall('teal', 20, `call-${i}`),
+        );
       }
       chatWithTools.mockRejectedValueOnce(new Error('provider down'));
       const turn = await request(http())

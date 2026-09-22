@@ -300,6 +300,7 @@ describe('ConversationService skill injection (M7c)', () => {
             tools: new ToolRegistry().list(),
             maxToolSteps: MAX_TOOL_STEPS,
             maxIterations: MAX_ITERATIONS,
+            progress: { stepsUsed: 0, toolCallsUsed: 0, priorActions: [] },
           },
         )}`,
       },
