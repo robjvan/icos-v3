@@ -185,15 +185,17 @@ Status: complete (2026-09-23). Full evidence in
   dialog focus in/out → responsive. Parked-turn resume stays
   unit-covered. Ephemeral `phase3-e2e-probe` rows only, all terminal.
 - [x] Production: `ng build` 274.53 kB initial (500 kB warn / 1 MB error);
-  `docker compose up -d` repair (2026-09-23, see evidence §7): root causes
-  found — (1) missing `.dockerignore` let host (darwin) `node_modules`
-  overwrite the image's Linux binaries (fixed, verified
-  `linux-arm64` in image); (2) `ng serve` dev image OOMs on the 2 GB
-  Docker host → multi-stage `Dockerfile` (node build + `nginx:alpine`
-  static serve, `try_files` SPA fallback, verified with stub content).
-  Full image build still **open**: AOT compile needs ~1.0–1.4 GB heap,
-  VM is over-committed (2.15/2.0 GB) — needs Docker RAM ≥4 GB or a
-  bigger build host. No compose changes needed; no `core/` changes.
+  `docker compose up -d` repaired and **verified 2026-09-23 after a RAM
+  bump to 4 GB**: root causes were (1) missing `.dockerignore` letting
+  host (darwin) `node_modules` overwrite the image's Linux binaries
+  (fixed, verified `linux-arm64` in image); (2) `ng serve` dev image OOMs
+  on small Docker hosts → multi-stage `Dockerfile` (node build +
+  `nginx:alpine` static serve, `try_files` SPA fallback). Verification
+  follow-ups: wget-based healthcheck (no node in nginx image), dual-stack
+  `listen [::]:4200`, README documents the ≥4 GB Docker memory need.
+  Final state: `core` healthy + `:3000` → 200, `web-client` healthy +
+  `:4200/` and `:4200/skills` → 200. No compose structural changes;
+  no `core/` changes.
 - [x] Evidence committed (this plan + `evidence/web-client-phase3.md`) —
   commit, NO push.
 

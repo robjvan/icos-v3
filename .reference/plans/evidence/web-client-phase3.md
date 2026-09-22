@@ -144,6 +144,21 @@ docker compose up -d` then `curl :4200` → 200 and healthy status.
 `npm ci` was tried and reverted: the committed lockfile is out of sync
 (`Missing: @emnapi/* from lock file`), so the image keeps `npm install`.
 
+### 2026-09-23 follow-up: full stack verified after RAM bump to 4 GB
+
+- `docker compose build web-client` succeeds; `docker compose up -d`
+  brings up **both services healthy** (`core` + `web-client`).
+- Verified: `:4200/` → 200 (real app HTML), `:4200/skills` → 200
+  (SPA fallback), `:3000/core/sessions?limit=1` → 200.
+- Two verification-found fixes (same commit scope):
+  - Web-client healthcheck used `node`, but `nginx:alpine` has none →
+    switched to BusyBox `wget` in `docker-compose.yml` (core's
+    node-based check untouched).
+  - nginx listened IPv4-only while `localhost` resolves `::1` first
+    inside the container (healthcheck refused) → added
+    `listen [::]:4200` to `nginx.conf`.
+- README “Requirements” now documents the ≥4 GB Docker memory need.
+
 ## 6. Files changed (all under `web-client/`)
 
 - `src/styles.css` — contrast tokens (deep sage, badge texts, dark error
