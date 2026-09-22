@@ -1,0 +1,29 @@
+<div
+  class="text-sm flex flex-row h-8 items-center justify-between bg-(--bg-primary) text-gray-500"
+>
+  <p class="ms-3">
+    ICOS |
+    <span [class]="serverStatusClass()">{{ serverStatus }}</span>
+  </p>
+  <div class="flex gap-8">
+    <p>Context: {{ currentContext }}</p>
+    <p class="">CPU: {{ cpuUsage }} % | RAM: {{ ramUsage }} %</p>
+  </div>
+  <div class="flex items-center gap-3 me-3">
+    <button
+      type="button"
+      (click)="toggleTheme()"
+      [attr.aria-label]="isDark() ? 'Switch to light theme' : 'Switch to dark theme'"
+      class="p-1 rounded hover:opacity-80"
+    >
+      @if (isDark()) {
+        <svg lucideSun [size]="16" aria-hidden="true"></svg>
+      } @else {
+        <svg lucideMoon [size]="16" aria-hidden="true"></svg>
+      }
+    </button>
+    <p>
+      <span class="me-1">{{ currentDate() }}</span> {{ currentTime() }}
+    </p>
+  </div>
+</div>

@@ -1,12 +1,12 @@
 # Web Client — Implementation Plan (`web-client/`)
 
-Status: planning (2026-09-22) — no code changes in this file. Build starts after plan sign-off.
+Status: Phase 0 complete (2026-09-22) — verified `tsc`, `eslint`, 15 unit tests, `ng build` (prod) green; committed on `dev`, no push.
 Scope: `web-client/` only. No changes to `core/` in this plan.
 Source-of-truth hierarchy: `.reference/web-client-blueprint.md` → this plan → code.
 Branch: `dev`. Commits per-phase, NO pushing.
 Layout inspiration: `core/test-client.html` (no UI mockup exists — blueprint "mockup" line was a copy-paste error, confirmed 2026-09-22).
 
-## [ ] 1. Goal
+## 1. Goal
 
 Replace `core/test-client.html` with a proper Angular SPA in `web-client/` that reaches full chat parity first, then adds tabbed management UI (functional where the server supports it, clearly-badged placeholders where it does not).
 
@@ -16,7 +16,7 @@ Explicit non-goals (deferred to next major phase per blueprint):
 - SSR, NgRx, new state libs, new i18n locales beyond `en`.
 - Any `core/` endpoint additions (including `GET /core/health`).
 
-## [ ] 2. Locked decisions (Q&A 2026-09-22)
+## 2. Locked decisions (Q&A 2026-09-22)
 
 - [x] API base: fix `src/constants.ts` to `${SERVER_URL}/core/...` direct CORS. No `proxy.conf.json`, no `environments/` files in Phase 0–1.
 - [x] Phase 1 scope: full test-client parity (chat / sessions / approvals / clarifications); Phase 2+ adds real tabs; everything without a server backing it is a routed placeholder card.
@@ -25,9 +25,9 @@ Explicit non-goals (deferred to next major phase per blueprint):
 - [x] PrimeNG allowed selectively; default is Tailwind + `@lucide/angular` (already installed). Install PrimeNG only when a Phase 2 widget proves the need.
 - [x] Health footer + health tab: static placeholders with a `TODO(core health endpoint)` in code. No HTTP `/health` exists — health today is only the `/health` slash-command text via the conversation API, and this plan adds no `core/` endpoints.
 
-## [ ] 3. Ground truth: what exists
+## 3. Ground truth: what exists
 
-### [ ] 3.1 Backend contract (do not change)
+### 3.1 Backend contract (do not change)
 
 | Frontend need | Method + path | Source |
 | --- | --- | --- |
@@ -54,7 +54,7 @@ Turn-resume semantics (must be preserved exactly):
 - `excludedFromContext` messages render dimmed with `/undo` title.
 - Session search debounced 250ms; sidebar is auxiliary — chat must keep working when it fails.
 
-### [ ] 3.2 Frontend starting point
+### 3.2 Frontend starting point
 
 - `web-client/src/constants.ts:1-10` is WRONG (`/api/v1/core/...` does not exist on core). Phase 0 fixes it.
 - Scaffold exists but empty: `dashboard-page/` (shell), `chat-ui-component/` (stub), `nav-tabs-component/` (stub), `footer-component/` (hardcoded values + `ngClass` violation of `web-client/AGENTS.md:33`), `about-modal/`, `settings-modal/`. `services/`, `models/`, `guards/` are empty dirs.
@@ -62,32 +62,33 @@ Turn-resume semantics (must be preserved exactly):
 - `src/styles.css:6-44` has `data-theme` dark/light CSS vars; Tailwind v4 imported. Fonts (`Inter` + `JetBrains Mono` via Fontsource), theme toggle, and lucide wiring still TODO.
 - `angular.json:33-44` production budgets (500kB warn / 1MB error initial; 4kB/8kB component style). `Dockerfile` runs `ng serve --host 0.0.0.0 --port 4200`; `docker-compose.yml` gates `web-client:4200` on `core:3000` healthy.
 
-### [ ] 3.3 Angular rules (from `web-client/AGENTS.md` + blueprint addendum — binding)
+### 3.3 Angular rules (from `web-client/AGENTS.md` + blueprint addendum — binding)
 
 Standalone components only (no `standalone: true` flag); signals + `computed()`; `OnPush`; `input()`/`output()`; `inject()` + `providedIn: 'root'` services; no `effect()` unless explicitly allowed; no `ngClass`/`ngStyle` (use `class`/`style` bindings); native `@if/@for/@switch`; Reactive forms; `async` pipe; no `mutate` on signals; one dir per component with separate `.ts/.html/.css` (kebab-case, matching existing `dashboard-page/` pattern); lazy `loadComponent` routes; AXE-clean + WCAG 2.1 AA.
 
-## [ ] 4. Phase 0 — Foundation + corrections
+## 4. Phase 0 — Foundation + corrections
 
-Goal: truthful constants, honest shell, clean toolchain baseline.
+Status: complete (2026-09-22).
 
-- [ ] Fix `src/constants.ts`: `SERVER_URL='http://localhost:3000'`, `CONVERSATION_ENDPOINT='/core/conversation'`, `SESSIONS_ENDPOINT='/core/sessions'`, `APPROVALS_ENDPOINT='/core/approvals'`, `CLARIFICATIONS_ENDPOINT='/core/clarifications'`, `SKILLS_ENDPOINT='/core/skills'`, `MEMORY_CANDIDATES_ENDPOINT='/core/memory-candidates'`. All fetches compose `${SERVER_URL}${*_ENDPOINT}...`. Docker quirk to document: `localhost` inside a container is the container itself — compose/NAT users set `SERVER_URL` to `host.docker.internal` or a LAN address.
-- [ ] Fix `footer-component`: remove `ngClass` (`footer-component.html:4`), `OnPush` + signals, live clock, static health/context/CPU/RAM placeholders each with `TODO(core health endpoint)` comment. Keep `ServerStatus` enum pattern.
-- [ ] Fix `app.spec.ts`: replace stale title assert with router-outlet / dashboard render assert.
-- [ ] Shell: `dashboard-page` hosts `nav-tabs` + `router-outlet` + `footer`; move tab content to lazy `loadComponent` routes in `app.routes.ts` (keep `** → ''` fallback).
-- [ ] Theme: `data-theme` dark/light toggle persisted to `localStorage`; blueprint palette (smoky granite `#25282A` dark / lilac mist `#E4E4E7` light / hawkesbury `#6F8F82` accent / Kimirucha `#8A6D3B` secondary / upsed tomato `#AF231C` destructive); Fontsource `Inter` + `JetBrains Mono`; `@lucide/angular` icons. Evaluate PrimeNG here — install only on proven need.
-- [ ] Verify: `tsc`, `eslint`, `ng test`, `ng build` clean — commit, NO push.
+- [x] Fix `src/constants.ts`: `SERVER_URL='http://localhost:3000'`, `CONVERSATION_ENDPOINT='/core/conversation'`, `SESSIONS_ENDPOINT='/core/sessions'`, `APPROVALS_ENDPOINT='/core/approvals'`, `CLARIFICATIONS_ENDPOINT='/core/clarifications'`, `SKILLS_ENDPOINT='/core/skills'`, `MEMORY_CANDIDATES_ENDPOINT='/core/memory-candidates'`. All fetches compose `${SERVER_URL}${*_ENDPOINT}...`. Docker quirk documented in `constants.ts`: `localhost` inside a container is the container itself — compose/NAT users set `SERVER_URL` to `host.docker.internal` or a LAN address.
+- [x] Fix `footer-component`: removed `ngClass`, `OnPush` + signals + `computed()`, live 1s clock with `OnDestroy` cleanup, static health/context/CPU/RAM placeholders each with `TODO(core health endpoint)` comment. Kept `ServerStatus` enum pattern. Added footer + theme-toggle specs.
+- [x] Fix `app.spec.ts`: replaced stale title assert with router-outlet render assert.
+- [x] Shell: `dashboard-page` hosts `nav-tabs` + `router-outlet` + `footer`; tab content is a lazy `loadComponent` child route in `app.routes.ts` (kept `** → ''` fallback). Fixed `nav-tabs-component.spec.ts` class-name typo (`NavTabsComponents` → `NavTabsComponent`) which was failing `ng test`.
+- [x] Theme: `ThemeService` (`providedIn: root`, signals, `localStorage icos-theme`, pre-boot `initFromStorage()` in `main.ts`); `data-theme` toggle in nav + footer with `aria-label`; blueprint palette aligned (dark `#25282A` / light `#E4E4E7`); Fontsource `Inter` 400/500/600 + `JetBrains Mono` 400 wired in `styles.css`; `@lucide/angular` icons registered via `provideLucideIcons` (message-square, settings, info, sun, moon, send, search, plus). PrimeNG evaluated — not needed in Phase 0, stays out.
+- [x] Toolchain: added `eslint.config.mjs` (flat config, type-checked rules, spec-file relaxations) + `npm run lint`. Verify: `tsc -p tsconfig.app.json` clean, `eslint "src/**/*.ts"` clean, `ng test` 8 files / 15 tests green, `ng build --configuration production` inside budgets (initial 265.84 kB) with `dashboard-page` + `chat-ui-component` lazy chunks. About/settings modals stubbed with Phase 2 notes; `guards/` untouched.
+- [x] Evidence: this section + commit below. No live-core integration in Phase 0 (no services yet) — integration evidence lands in Phase 1.
 
-## [ ] 5. Phase 1 — Chat parity with `test-client.html`
+## 5. Phase 1 — Chat parity with `test-client.html`
 
 Goal: Angular client does everything `test-client.html:418-1057` does, with identical stream/resume semantics.
 
-### [ ] Models (`src/app/models/`)
+### Models (`src/app/models/`)
 
 - [ ] `message.ts`, `session.ts`, `approval.ts`, `clarification.ts`
 - [ ] `stream-event.ts` (`meta | token | tool | approval | done | error`)
 - [ ] `turn-outcome.ts` (`ok | approval_required | processing` + `command | tool | approval | outcome | result`)
 
-### [ ] Services (`providedIn: root`, `inject()`, signals, no `effect()`)
+### Services (`providedIn: root`, `inject()`, signals, no `effect()`)
 
 - [ ] `conversation.service.ts` — `POST ${SERVER_URL}${CONVERSATION_ENDPOINT}/stream` + `/resume-stream` via `fetch` + `ReadableStream` SSE parser (`\n\n` framing, `event:`/`data:` lines, `JSON.parse` per event).
 - [ ] `session.service.ts` — `GET conversation/:id`, `GET sessions?limit=50`, `GET sessions/search?q=&limit=50`.
@@ -95,14 +96,14 @@ Goal: Angular client does everything `test-client.html:418-1057` does, with iden
 - [ ] `clarification.service.ts` — `GET clarifications?sessionId=&status=pending`, `POST :id/answer {sessionId,answer}`, `POST :id/cancel {sessionId}`.
 - [ ] Sidebar/search/approval/question failures stay auxiliary: log + keep chat usable (same policy as test client `catch {}` blocks).
 
-### [ ] Components (one dir + separate `.ts/.html/.css` each; `OnPush`; `input()/output()`; `@if/@for`; `class`/`style` bindings; Reactive forms)
+### Components (one dir + separate `.ts/.html/.css` each; `OnPush`; `input()/output()`; `@if/@for`; `class`/`style` bindings; Reactive forms)
 
 - [ ] `session-sidebar/` — list (title/preview, `messageCount · updatedAt`), 250ms-debounce search, `+ New`, active highlight, short-id + date formatting.
 - [ ] `message-list/` — user/assistant/system bubbles, `excludedFromContext` dim + `/undo` title, auto-scroll, `Running tool <name>...` progress, `Tool ran: <name>` trace line, system-notice rendering for `command` results.
 - [ ] `composer/` — textarea, Enter=send / Shift+Enter=newline, busy-disable with `...` state, autofocus.
 - [ ] `approval-card/` — action + description + Approve/Reject; `question-card/` — question + radio options (first checked) or free-text + Answer/Dismiss.
 
-### [ ] State (`conversation-store`, signals)
+### State (`conversation-store`, signals)
 
 - [ ] Owns `sessionId`, `messages`, `busy`, `pendingResumes: Map<approvalId, {requestId, sessionId}>`.
 - [ ] `meta` sets `sessionId`; tokens stream into the pending bubble; `approval` event triggers early approval refresh; `done` without tokens fills `reply`.
@@ -111,13 +112,15 @@ Goal: Angular client does everything `test-client.html:418-1057` does, with iden
 - [ ] `command.kind === 'session'` (`/new`, `/fork`) replaces pane with the single system bubble.
 - [ ] After every send AND every resume: refresh sessions + approvals + questions.
 
-### [ ] Verify
+### Verify
+
+Phase 1 verification (unit + live integration + `tsc`/`eslint`) is required before the Phase 1 commit.
 
 - [ ] Unit where useful: SSE parser (split chunks, `\n\n` boundaries, `meta/token/done/error`), store transitions (approval-park → resume-once, processing bound, session-command reset). `ng test` green.
 - [ ] Integration vs live `localhost:3000`: send → streamed tokens → history persists; sessions list/search; approval approve+reject both resume; clarification answer+cancel; `/health`, `/new` command rendering. No evidence committed without a live run.
 - [ ] `tsc` + `eslint` clean — commit, NO push.
 
-## [ ] 6. Phase 2 — Tabs (functional where server exists, placeholders elsewhere)
+## 6. Phase 2 — Tabs (functional where server exists, placeholders elsewhere)
 
 Goal: blueprint tab bar with lazy routes; only skills/tools get live logic, everything else is an honest placeholder.
 
@@ -128,7 +131,7 @@ Goal: blueprint tab bar with lazy routes; only skills/tools get live logic, ever
 - [ ] `settings-modal/` (client settings) + `about-modal/` content. `guards/` stays empty (blueprint auth: none).
 - [ ] Verify: `ng test`, lazy-route smoke (every tab loads, placeholders render badges), `tsc` + `eslint` clean — commit, NO push.
 
-## [ ] 7. Phase 3 — Polish, a11y, ship
+## 7. Phase 3 — Polish, a11y, ship
 
 - [ ] Floating disconnected windows + gap layout per blueprint; system health footer bar (still static + `TODO`); file-upload placeholder input on composer (images/docs/audio-video, badged `server unimplemented`); session search/filters final pass.
 - [ ] i18n: `en` only; `fr/es/pa/zh` deferred. LTR only.
@@ -138,14 +141,14 @@ Goal: blueprint tab bar with lazy routes; only skills/tools get live logic, ever
 - [ ] Production: `ng build` inside budgets (`angular.json:33-44`); `docker compose up --build` → `core:3000` healthy → `web-client:4200` serves 200.
 - [ ] Evidence to `.reference/plans/evidence/` (unit + e2e + live run per repo ground rules) — commit, NO push.
 
-## [ ] 8. Execution order
+## 8. Execution order
 
 1. Phase 0 → verify → commit.
 2. Phase 1 models → services → components → store → unit → live integration → commit.
 3. Phase 2 chat route first, then skills/tools, then placeholders batch → commit.
 4. Phase 3 styling → a11y → E2E → docker → evidence → commit.
 
-## [ ] 9. Open items for build (defaults if unanswered)
+## 9. Open items for build (defaults if unanswered)
 
 - Keep `models/ + services/ + guards/` top-level layout (default YES; collapse to per-feature only if imports get messy).
 - PrimeNG stays out until a Phase 2 widget proves need (default YES).

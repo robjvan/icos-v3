@@ -1,0 +1,33 @@
+.tab-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.tab-link:hover {
+  color: var(--text-primary);
+}
+
+.tab-link.active {
+  color: var(--text-primary);
+  background: var(--bg-glass);
+}
+
+.theme-btn {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.theme-btn:hover {
+  color: var(--text-primary);
+}
