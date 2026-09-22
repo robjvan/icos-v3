@@ -226,17 +226,7 @@ describe('scanSkillDir / loadSkillBody', () => {
     'capture-idea',
   ])('ship seed %s parses clean under the validator', (name) => {
     const raw = readFileSync(
-      join(
-        __dirname,
-        '..',
-        '..',
-        '..',
-        '..',
-        'docs',
-        'skills',
-        name,
-        SKILL_FILE,
-      ),
+      join(__dirname, '..', '..', '..', 'docs', 'skills', name, SKILL_FILE),
       'utf8',
     );
     const parsed = parseSkillFile(raw, OPTS);
@@ -245,7 +235,7 @@ describe('scanSkillDir / loadSkillBody', () => {
   });
 
   it('anchors discovery on the real icos-v3-stack seed', () => {
-    const seeds = join(__dirname, '..', '..', '..', '..', 'docs', 'skills');
+    const seeds = join(__dirname, '..', '..', '..', 'docs', 'skills');
     const descriptors = (
       ['icos-v3-stack', 'daily-journal', 'comments-pass'] as const
     ).map((name) => {

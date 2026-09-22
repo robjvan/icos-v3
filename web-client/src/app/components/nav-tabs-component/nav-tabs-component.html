@@ -1,0 +1,29 @@
+<nav class="flex flex-row h-12 items-center gap-1 px-3 border-b border-(--border-subtle)" aria-label="Primary">
+  <span class="font-semibold tracking-widest me-4">ICOS</span>
+  @for (tab of tabs; track tab.path) {
+    <a
+      [routerLink]="tab.path"
+      routerLinkActive="active"
+      [routerLinkActiveOptions]="{ exact: true }"
+      class="tab-link"
+      aria-current="page"
+    >
+      @switch (tabIcon(tab)) {
+        @case ('chat') {
+          <svg lucideMessageSquare [size]="16" aria-hidden="true"></svg>
+        }
+        @case ('settings') {
+          <svg lucideSettings [size]="16" aria-hidden="true"></svg>
+        }
+        @default {
+          <svg lucideInfo [size]="16" aria-hidden="true"></svg>
+        }
+      }
+      {{ tab.label }}
+    </a>
+  }
+  <span class="grow"></span>
+  <button type="button" (click)="toggleTheme()" [attr.aria-label]="themeLabel()" class="theme-btn">
+    {{ theme() === 'dark' ? 'Light' : 'Dark' }}
+  </button>
+</nav>

@@ -1,0 +1,46 @@
+.composer {
+  border-top: 1px solid #333;
+  padding: 0.75rem;
+  display: flex;
+  gap: 0.625rem;
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 48px;
+  max-height: 160px;
+  padding: 0.75rem;
+  border: 1px solid #444;
+  border-radius: 0.5rem;
+  background: #111;
+  color: #eee;
+  font: inherit;
+  outline: none;
+}
+
+.composer textarea:focus {
+  border-color: #666;
+}
+
+.composer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 1rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: #6f8f82;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer button:hover {
+  background: #82a598;
+}
+
+.composer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

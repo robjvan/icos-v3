@@ -6,17 +6,29 @@ import { CommandDispatcher } from '../commands/command-dispatcher';
 import { DisplayPreferenceStore } from '../commands/display-preferences';
 import type { HostHealthProvider } from '../commands/host-health';
 import { LlmClient } from '../llm/llm.client';
-import type { ChatResult, StreamSink } from '../llm/llm.client';
-import type { LlmChatRequest } from '../llm/llm-provider';
+import type { LlmResult, LlmToolRequest } from '../llm/llm.protocol';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import type { MemoryExtractionInput } from '../memory/memory-candidate-extractor';
 import type { ValidatedCandidate } from '../memory/memory-candidate';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
 import { SKILL_FILE } from '../skills/skill-loader';
 import { SkillService } from '../skills/skill.service';
+import { ToolRegistry } from '../tools/tool-registry';
 import { ConversationService } from './conversation.service';
+import {
+  MAX_ITERATIONS,
+  MAX_TOOL_STEPS,
+  MAX_TURN_DURATION_MS,
+  TOOL_STEP_INSTRUCTION,
+} from './conversation.service';
+import { buildPlanningBlock } from '../agent/planning-context';
 import { FakeSessionRepository } from './fake-session.repository';
 import { SessionStore } from './session.store';
+import {
+  stubAgentRuns,
+  stubToolExecution,
+  stubToolLlm,
+} from './stub-tool-execution';
 
 function testConfig(
   skillsDirPath: string,
@@ -45,6 +57,9 @@ function testConfig(
     skillsMaxActivePerSession: 5,
     skillsMaxAutoLoadedPerTurn: 2,
     skillsMaxContextChars: 8000,
+    agentMaxIterations: MAX_ITERATIONS,
+    agentMaxToolSteps: MAX_TOOL_STEPS,
+    agentMaxTurnDurationMs: MAX_TURN_DURATION_MS,
     ...overrides,
   };
 }
@@ -66,22 +81,16 @@ function writeSkill(
 async function setup(
   dir: string,
   overrides: Partial<CoreConfig> = {},
-  chatImpl?: (request: LlmChatRequest) => Promise<ChatResult>,
+  proposeImpl?: (request: LlmToolRequest) => Promise<LlmResult>,
 ) {
   const config = testConfig(dir, overrides);
   const repository = new FakeSessionRepository();
   const store = new SessionStore(repository, config);
-  const chat = jest.fn<Promise<ChatResult>, [LlmChatRequest]>(
-    chatImpl ?? (() => Promise.resolve({ content: 'hi back', model: 'm' })),
-  );
-  const chatStream = jest.fn<Promise<ChatResult>, [LlmChatRequest, StreamSink]>(
-    (_request, sink) => {
-      sink.onToken('hi ');
-      sink.onToken('back');
-      return Promise.resolve({ content: 'hi back', model: 'm' });
-    },
-  );
-  const llm = { chat, chatStream } as unknown as LlmClient;
+  const { chatWithTools, chatStreamWithTools } = stubToolLlm();
+  if (proposeImpl) chatWithTools.mockImplementation(proposeImpl);
+  const chat = chatWithTools;
+  const chatStream = chatStreamWithTools;
+  const llm = { chatWithTools, chatStreamWithTools } as unknown as LlmClient;
   const extract = jest.fn<
     Promise<ValidatedCandidate[]>,
     [MemoryExtractionInput]
@@ -112,6 +121,9 @@ async function setup(
     candidates,
     commands,
     skills,
+    stubToolExecution().service,
+    new ToolRegistry(),
+    stubAgentRuns().service,
     config,
   );
   return {
@@ -152,9 +164,12 @@ describe('ConversationService skill injection (M7c)', () => {
   });
 
   function sentMessages(
-    chat: jest.Mock<Promise<ChatResult>, [LlmChatRequest]>,
+    chat: jest.Mock<Promise<LlmResult>, [LlmToolRequest]>,
   ): { role: string; content: string }[] {
-    return chat.mock.calls[0][0].messages;
+    return chat.mock.calls[0][0].messages as {
+      role: string;
+      content: string;
+    }[];
   }
 
   it('injects the catalog block plus explicit bodies with scopes', async () => {
@@ -163,7 +178,10 @@ describe('ConversationService skill injection (M7c)', () => {
     skills.useSkill(first.sessionId, 'daily-journal');
     await service.converse('journal time', first.sessionId);
 
-    const messages = chat.mock.calls[1][0].messages;
+    const messages = chat.mock.calls[1][0].messages as {
+      role: string;
+      content: string;
+    }[];
     expect(messages[0]?.content).toContain('<available_skills>');
     expect(messages[0]?.content).toContain('- daily-journal:');
     expect(messages[1]).toEqual({
@@ -270,11 +288,22 @@ describe('ConversationService skill injection (M7c)', () => {
     expect(await failing.repository.getMessages(id)).toEqual([]);
   });
 
-  it('disabled mode stays byte-identical to pre-M7 context', async () => {
+  it('disabled mode injects no skill content', async () => {
     const { service, chat } = await setup(dir, { skillsEnabled: false });
     await service.converse('hello');
     expect(sentMessages(chat)).toEqual([
-      { role: 'system', content: 'test-system' },
+      {
+        role: 'system',
+        content: `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${buildPlanningBlock(
+          {
+            goal: 'hello',
+            tools: new ToolRegistry().list(),
+            maxToolSteps: MAX_TOOL_STEPS,
+            maxIterations: MAX_ITERATIONS,
+            progress: { stepsUsed: 0, toolCallsUsed: 0, priorActions: [] },
+          },
+        )}`,
+      },
       { role: 'user', content: 'hello' },
     ]);
   });

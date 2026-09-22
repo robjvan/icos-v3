@@ -1,20 +1,48 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { CoreModule } from '../src/core.module';
 import { CORE_CONFIG } from '../src/config';
+import {
+  MAX_ITERATIONS,
+  MAX_TOOL_STEPS,
+  MAX_TURN_DURATION_MS,
+  TOOL_STEP_INSTRUCTION,
+} from '../src/conversation/conversation.service';
+import { buildPlanningBlock } from '../src/agent/planning-context';
+import { ToolRegistry } from '../src/tools/tool-registry';
 import { LlmClient } from '../src/llm/llm.client';
 import { MemoryCandidateExtractor } from '../src/memory/memory-candidate-extractor';
 
 describe('Conversation (e2e)', () => {
   let app: INestApplication<App> | null = null;
   let dir = '';
-  const chat = jest.fn<Promise<{ content: string; model: string }>, [unknown]>(
-    () => Promise.resolve({ content: 'mock reply', model: 'test-model' }),
+  interface MockToolCall {
+    id: string;
+    name: string;
+    version: number;
+    rawArguments: string;
+    args: Record<string, unknown>;
+  }
+
+  interface MockLlmResult {
+    kind: string;
+    content: string | null;
+    model: string;
+    toolCalls?: MockToolCall[];
+  }
+
+  const chatWithTools = jest.fn<Promise<MockLlmResult>, [unknown]>(() =>
+    Promise.resolve({
+      kind: 'text',
+      content: 'mock reply',
+      model: 'test-model',
+    }),
   );
   let streamFails = false;
   let extractFails = false;
@@ -46,25 +74,40 @@ describe('Conversation (e2e)', () => {
       ]);
     },
   );
-  const chatStream = jest.fn(
-    (
-      messages: unknown,
-      sink: { onToken: (content: string) => void },
-    ): Promise<{ content: string; model: string }> => {
-      void messages;
-      if (streamFails) {
-        return Promise.reject(new Error('upstream boom'));
-      }
-      sink.onToken('mock ');
-      sink.onToken('reply');
-      return Promise.resolve({ content: 'mock reply', model: 'test-model' });
-    },
-  );
+  const chatStreamWithTools = jest.fn<
+    Promise<MockLlmResult>,
+    [unknown, { onToken: (content: string) => void }]
+  >((request, sink) => {
+    void request;
+    if (streamFails) {
+      return Promise.reject(new Error('upstream boom'));
+    }
+    sink.onToken('mock ');
+    sink.onToken('reply');
+    return Promise.resolve({
+      kind: 'text',
+      content: 'mock reply',
+      model: 'test-model',
+    });
+  });
+
+  const anyString = expect.any(String) as unknown as string;
 
   interface ConversationResponse {
+    status?: string;
     sessionId: string;
+    requestId?: string;
     reply: string;
     model: string;
+    tool?: { invocationId: string; name: string };
+    result?: unknown;
+    approval?: {
+      approvalId: string;
+      invocationId: string;
+      tool: string;
+      args: Record<string, unknown>;
+    };
+    outcome?: string;
   }
 
   interface HistoryResponse {
@@ -104,9 +147,12 @@ describe('Conversation (e2e)', () => {
         skillsMaxActivePerSession: 5,
         skillsMaxAutoLoadedPerTurn: 2,
         skillsMaxContextChars: 8000,
+        agentMaxIterations: MAX_ITERATIONS,
+        agentMaxToolSteps: MAX_TOOL_STEPS,
+        agentMaxTurnDurationMs: MAX_TURN_DURATION_MS,
       })
       .overrideProvider(LlmClient)
-      .useValue({ chat, chatStream })
+      .useValue({ chatWithTools, chatStreamWithTools })
       .overrideProvider(MemoryCandidateExtractor)
       .useValue({ extract })
       .compile();
@@ -124,9 +170,13 @@ describe('Conversation (e2e)', () => {
   }
 
   beforeEach(async () => {
-    chat.mockClear();
-    chat.mockResolvedValue({ content: 'mock reply', model: 'test-model' });
-    chatStream.mockClear();
+    chatWithTools.mockClear();
+    chatWithTools.mockResolvedValue({
+      kind: 'text',
+      content: 'mock reply',
+      model: 'test-model',
+    });
+    chatStreamWithTools.mockClear();
     streamFails = false;
     extract.mockClear();
     extractFails = false;
@@ -159,9 +209,53 @@ describe('Conversation (e2e)', () => {
     expect(body.reply).toBe('mock reply');
     expect(body.model).toBe('test-model');
     // The ICOS session identity reaches the LLM request contract.
-    expect(chat.mock.calls[0][0]).toMatchObject({
+    expect(chatWithTools.mock.calls[0][0]).toMatchObject({
       sessionId: body.sessionId,
     });
+  });
+
+  it('persists one agent run per turn with steps and terminal state', async () => {
+    const res = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'hello' })
+      .expect(200);
+    const sessionId = (res.body as ConversationResponse).sessionId;
+
+    const db = new Database(join(dir, 'sessions.sqlite'), {
+      readonly: true,
+    });
+    try {
+      const rows = db
+        .prepare(`SELECT * FROM agent_runs WHERE session_id = ?`)
+        .all(sessionId) as {
+        goal: string;
+        state: string;
+        request_ids: string;
+        current_request_id: string;
+        iteration_count: number;
+        tool_call_count: number;
+        limits_json: string;
+        termination_json: string;
+      }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ goal: 'hello', state: 'completed' });
+      expect(JSON.parse(rows[0].request_ids)).toHaveLength(1);
+      expect(rows[0].current_request_id).toBe(
+        (res.body as ConversationResponse).requestId,
+      );
+      expect(rows[0].iteration_count).toBe(1);
+      expect(rows[0].tool_call_count).toBe(0);
+      expect(JSON.parse(rows[0].limits_json)).toEqual({
+        maxIterations: MAX_ITERATIONS,
+        maxToolSteps: MAX_TOOL_STEPS,
+        maxTurnDurationMs: MAX_TURN_DURATION_MS,
+      });
+      expect(JSON.parse(rows[0].termination_json)).toMatchObject({
+        reason: 'final_answer',
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('retains history across calls in the same session', async () => {
@@ -225,7 +319,7 @@ describe('Conversation (e2e)', () => {
     expect(res.text).toContain('event: done');
     expect(res.text).toContain('"content":"mock "');
     expect(res.text).toContain('"reply":"mock reply"');
-    expect(chatStream).toHaveBeenCalledTimes(1);
+    expect(chatStreamWithTools).toHaveBeenCalledTimes(1);
   });
 
   it('POST /core/conversation/stream emits an error event on failure', async () => {
@@ -422,7 +516,7 @@ describe('Conversation (e2e)', () => {
     expect(body.reply).toContain('Host System');
     expect(body.reply).toContain('Status: healthy');
     expect(body.command).toMatchObject({ kind: 'data' });
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
     expect(extract).not.toHaveBeenCalled();
 
     // Nothing persisted as conversation.
@@ -435,7 +529,7 @@ describe('Conversation (e2e)', () => {
       .post('/core/conversation')
       .send({ message: '/nope' })
       .expect(404);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('rejects malformed slash commands with 400', async () => {
@@ -443,7 +537,7 @@ describe('Conversation (e2e)', () => {
       .post('/core/conversation')
       .send({ message: '/' })
       .expect(400);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('streams slash commands as meta then done with no tokens', async () => {
@@ -456,7 +550,7 @@ describe('Conversation (e2e)', () => {
     expect(res.text).not.toContain('event: token');
     expect(res.text).toContain('event: done');
     expect(res.text).toContain('"model":"core"');
-    expect(chatStream).not.toHaveBeenCalled();
+    expect(chatStreamWithTools).not.toHaveBeenCalled();
   });
 
   it('GET /core/skills reports the empty enabled catalog', async () => {
@@ -476,7 +570,7 @@ describe('Conversation (e2e)', () => {
     expect(body.model).toBe('core');
     expect(body.reply).toContain('Skills: none');
     expect(body.command).toMatchObject({ kind: 'data' });
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
     expect(extract).not.toHaveBeenCalled();
 
     const listed = await request(http()).get('/core/sessions').expect(200);
@@ -520,7 +614,7 @@ describe('Conversation (e2e)', () => {
     });
 
     await request(http()).get('/core/skills/nope').expect(404);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('suggest and discover rank without activating or injecting', async () => {
@@ -560,14 +654,14 @@ describe('Conversation (e2e)', () => {
     });
     const sessions = await request(http()).get('/core/sessions').expect(200);
     expect((sessions.body as { sessions: unknown[] }).sessions).toHaveLength(0);
-    expect(chat).not.toHaveBeenCalled();
+    expect(chatWithTools).not.toHaveBeenCalled();
   });
 
   it('M7c turn scopes: explicit pins, one-shot pulls, contextual discovery', async () => {
     type WireMessage = { role: string; content: string };
     const sent = (call: number): WireMessage[] =>
       (
-        chat.mock.calls[call][0] as {
+        chatWithTools.mock.calls[call][0] as {
           messages: WireMessage[];
           sessionId: string;
         }
@@ -716,16 +810,22 @@ describe('Conversation (e2e)', () => {
     ).toHaveLength(2);
 
     // The next LLM turn sees only the first turn plus the new message.
-    chat.mockClear();
+    chatWithTools.mockClear();
     await request(http())
       .post('/core/conversation')
       .send({ message: 'third', sessionId })
       .expect(200);
-    const sent = chat.mock.calls[0][0] as {
+    const sent = chatWithTools.mock.calls[0][0] as {
       messages: { content: string }[];
     };
     expect(sent.messages.map((m) => m.content)).toEqual([
-      'test-system',
+      `test-system\n\n${TOOL_STEP_INSTRUCTION}\n\n${buildPlanningBlock({
+        goal: 'third',
+        tools: new ToolRegistry().list(),
+        maxToolSteps: MAX_TOOL_STEPS,
+        maxIterations: MAX_ITERATIONS,
+        progress: { stepsUsed: 0, toolCallsUsed: 0, priorActions: [] },
+      })}`,
       'first',
       'mock reply',
       'third',
@@ -836,7 +936,8 @@ describe('Conversation (e2e)', () => {
     const id = (created.body as { id: string }).id;
 
     // The model insists approval happened. It did not.
-    chat.mockResolvedValueOnce({
+    chatWithTools.mockResolvedValueOnce({
+      kind: 'text',
       content: 'Sure, you approved that. Proceeding.',
       model: 'test-model',
     });
@@ -1017,5 +1118,735 @@ describe('Conversation (e2e)', () => {
       .post('/core/clarifications')
       .send({ sessionId, question: 'q?', options: ['dup', 'dup'] })
       .expect(400);
+  });
+
+  describe('tool turns', () => {
+    // NOTE: mock call ids must be unique per proposal like a real
+    // provider's. Reused ids collide in context validation
+    // (invalid_context), which is correct fail-closed behavior.
+    function searchCall(query = 'teal', limit = 20, id = 'model-call-1') {
+      const rawArguments = JSON.stringify({ query, limit });
+      return {
+        kind: 'tool_calls',
+        content: null,
+        model: 'test-model',
+        toolCalls: [
+          {
+            id,
+            name: 'session.search',
+            version: 1,
+            rawArguments,
+            args: { query, limit },
+          },
+        ],
+      };
+    }
+
+    function renameCall(title = 'Ward map') {
+      const rawArguments = JSON.stringify({ title });
+      return {
+        kind: 'tool_calls',
+        content: null,
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'model-call-1',
+            name: 'session.rename',
+            version: 1,
+            rawArguments,
+            args: { title },
+          },
+        ],
+      };
+    }
+
+    function finalText(content: string) {
+      return { kind: 'text', content, model: 'test-model' };
+    }
+
+    it('executes a search turn against the real transcript, scoped to the session', async () => {
+      const other = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal private' })
+        .expect(200);
+      const otherId = (other.body as ConversationResponse).sessionId;
+
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(finalText('teal is local'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      const body = turn.body as ConversationResponse;
+      expect(body.status).toBe('ok');
+      expect(body.reply).toBe('teal is local');
+      expect(body.requestId).toBeDefined();
+      expect(body.tool).toMatchObject({
+        invocationId: anyString,
+        name: 'session.search',
+      });
+
+      // The second proposal consumed the durable scoped result while
+      // tools stayed offered (multi-step chaining, not a disabled final).
+      const chained = chatWithTools.mock.calls.find((call) =>
+        ((call[0] as { messages?: { role?: string }[] }).messages ?? []).some(
+          (m) => m.role === 'tool',
+        ),
+      );
+      expect(chained).toBeDefined();
+      expect((chained?.[0] as { tools?: unknown[] }).tools).toHaveLength(2);
+      const toolMessage = (
+        chained?.[0] as {
+          messages: { role: string; callId?: string; content: string }[];
+        }
+      ).messages.find((m) => m.role === 'tool');
+      expect(toolMessage?.callId).toBe(body.tool?.invocationId);
+      const result = JSON.parse(toolMessage?.content ?? '{}') as {
+        ok: boolean;
+        matches: { sessionId: string; content: string }[];
+      };
+      expect(result.ok).toBe(true);
+      expect(result.matches.map((m) => m.sessionId)).toEqual([sessionId]);
+      expect(result.matches.every((m) => m.sessionId !== otherId)).toBe(true);
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find teal', 'teal is local']);
+    });
+
+    it('skips repeated calls without re-executing', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(finalText('deduped answer'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      expect((turn.body as ConversationResponse).reply).toBe('deduped answer');
+
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const rows = db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM tool_requests
+             WHERE session_id = ? AND state = 'succeeded'`,
+          )
+          .get(sessionId) as { n: number };
+        // One execution despite two identical proposals.
+        expect(rows.n).toBe(1);
+      } finally {
+        db.close();
+      }
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find teal', 'deduped answer']);
+    });
+
+    it('recovers from a rejected proposal with corrected arguments', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      // Blank queries fail validation; the model sees the failure and
+      // corrects within the same turn instead of 502ing.
+      chatWithTools.mockResolvedValueOnce({
+        kind: 'tool_calls',
+        content: null,
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'model-call-1',
+            name: 'session.search',
+            version: 1,
+            rawArguments: '{"query":"","limit":20}',
+            args: { query: '', limit: 20 },
+          },
+        ],
+      });
+      chatWithTools.mockResolvedValueOnce(finalText('recovered answer'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      expect((turn.body as ConversationResponse).reply).toBe(
+        'recovered answer',
+      );
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply', 'find teal', 'recovered answer']);
+    });
+
+    it('delivers the persisted result when the final response failed', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      // The model keeps searching, so the step bound forces finalization
+      // through resume(); the final call itself goes down. Distinct
+      // call ids like a real provider (reused ids would collide in
+      // context validation).
+      for (let i = 0; i < 6; i++) {
+        chatWithTools.mockResolvedValueOnce(
+          searchCall('teal', 20, `call-${i}`),
+        );
+      }
+      chatWithTools.mockRejectedValueOnce(new Error('provider down'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      const body = turn.body as ConversationResponse;
+      expect(body.status).toBe('ok');
+      expect(body.reply).toContain('could not be completed');
+      const delivered = body.result as {
+        ok: boolean;
+        matches: { sessionId: string; content: string }[];
+      };
+      expect(delivered.ok).toBe(true);
+      expect(delivered.matches).toHaveLength(1);
+      expect(delivered.matches[0]).toMatchObject({
+        sessionId,
+        content: 'teal local',
+      });
+
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: body.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe(body.reply);
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find teal', body.reply]);
+    });
+
+    it('parks renames as 202, then resumes after approval exactly once', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'call it Ward map', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+      expect(pending.status).toBe('approval_required');
+      expect(pending.requestId).toBeDefined();
+      expect(pending.approval).toMatchObject({
+        approvalId: anyString,
+        tool: 'session.rename',
+        args: { title: 'Ward map' },
+      });
+
+      // Nothing persisted while approval is pending.
+      const before = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (before.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply']);
+
+      // The parked invocation exists with no execution attached.
+      const parkDb = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const parked = parkDb
+          .prepare(
+            `SELECT state, execution_json FROM tool_requests WHERE request_id = ?`,
+          )
+          .get(pending.requestId) as {
+          state: string;
+          execution_json: string | null;
+        };
+        expect(parked.state).toBe('awaiting_approval');
+        expect(parked.execution_json).toBeNull();
+      } finally {
+        parkDb.close();
+      }
+
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe('renamed');
+
+      const sessions = await request(http()).get('/core/sessions').expect(200);
+      const renamed = (
+        sessions.body as { sessions: { sessionId: string; title?: string }[] }
+      ).sessions.find((s) => s.sessionId === sessionId);
+      expect(renamed?.title).toBe('Ward map');
+
+      // Duplicate resume answers from the durable record, no re-execution.
+      const again = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((again.body as ConversationResponse).reply).toBe('renamed');
+      const after = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (after.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply', 'call it Ward map', 'renamed']);
+    });
+
+    it('reconsiders after rejection with zero execution', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Nope'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/reject`)
+        .send({ sessionId })
+        .expect(200);
+
+      // The denial becomes an observation: the agent answers from it
+      // instead of dying on the mirror notice.
+      chatWithTools.mockResolvedValueOnce(finalText('leaving the name'));
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).status).toBe('ok');
+      expect((resumed.body as ConversationResponse).outcome).toBeUndefined();
+      expect((resumed.body as ConversationResponse).reply).toBe(
+        'leaving the name',
+      );
+
+      const sessions = await request(http()).get('/core/sessions').expect(200);
+      const kept = (
+        sessions.body as { sessions: { sessionId: string; title?: string }[] }
+      ).sessions.find((s) => s.sessionId === sessionId);
+      expect(kept?.title).toBeUndefined();
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['hello', 'mock reply', 'rename it', 'leaving the name']);
+
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const runs = db
+          .prepare(
+            `SELECT state, termination_json FROM agent_runs
+             WHERE session_id = ? ORDER BY rowid`,
+          )
+          .all(sessionId) as {
+          state: string;
+          termination_json: string;
+        }[];
+        expect(runs).toHaveLength(2);
+        expect(runs[1]).toMatchObject({ state: 'completed' });
+        expect(JSON.parse(runs[1].termination_json)).toMatchObject({
+          reason: 'final_answer',
+        });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('validates resume requests and denies foreign sessions', async () => {
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId: 'not-a-uuid', requestId: 'also-bad' })
+        .expect(400);
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({
+          sessionId: '11111111-1111-4111-8111-111111111111',
+          requestId: '22222222-2222-4222-8222-222222222222',
+        })
+        .expect(404);
+
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      const fork = await request(http())
+        .post('/core/conversation')
+        .send({ message: '/fork', sessionId })
+        .expect(200);
+      const forkId = (fork.body as ConversationResponse).sessionId;
+      expect(forkId).not.toBe(sessionId);
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId: forkId, requestId: pending.requestId })
+        .expect(400);
+    });
+
+    it('streams tool and approval events over SSE', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatStreamWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatStreamWithTools.mockResolvedValueOnce(finalText('teal is local'));
+      const searched = await request(http())
+        .post('/core/conversation/stream')
+        .send({ message: 'find teal', sessionId })
+        .expect(200)
+        .expect('Content-Type', /event-stream/);
+      expect(searched.text).toContain('event: tool');
+      expect(searched.text).toContain('"reply":"teal is local"');
+
+      chatStreamWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation/stream')
+        .send({ message: 'rename it', sessionId })
+        .expect(200)
+        .expect('Content-Type', /event-stream/);
+      expect(parked.text).toContain('event: approval');
+      expect(parked.text).toContain('event: done');
+      expect(parked.text).not.toContain('event: token');
+    });
+
+    it('keeps the execution record across /undo without re-executing', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+
+      // Undo hides the turn text but the ledger still answers.
+      await request(http())
+        .post('/core/conversation')
+        .send({ message: '/undo', sessionId })
+        .expect(200);
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe('renamed');
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      const contents = (history.body as HistoryResponse).messages.map(
+        (m) => m.content,
+      );
+      expect(contents.filter((c) => c === 'renamed')).toHaveLength(1);
+    });
+
+    it('keeps distinct durable identities across chained steps', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(searchCall('teal'));
+      chatWithTools.mockResolvedValueOnce(searchCall('local'));
+      chatWithTools.mockResolvedValueOnce(finalText('both found'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find both', sessionId })
+        .expect(200);
+      expect((turn.body as ConversationResponse).status).toBe('ok');
+
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      try {
+        const rows = db
+          .prepare(
+            `SELECT request_id, invocation_id, execution_json IS NOT NULL AS executed
+             FROM tool_requests WHERE session_id = ? ORDER BY rowid`,
+          )
+          .all(sessionId) as {
+          request_id: string;
+          invocation_id: string | null;
+          executed: number;
+        }[];
+        // Two executed steps with distinct durable invocations, plus
+        // the closing text row — no duplicates, no shared identity.
+        const invoked = rows.filter((r) => r.invocation_id);
+        expect(invoked).toHaveLength(2);
+        expect(invoked[0].invocation_id).not.toBe(invoked[1].invocation_id);
+        expect(invoked.map((r) => r.executed)).toEqual([1, 1]);
+        const runs = db
+          .prepare(`SELECT request_ids FROM agent_runs WHERE session_id = ?`)
+          .all(sessionId) as { request_ids: string }[];
+        const chained = runs.filter(
+          (r) => (JSON.parse(r.request_ids) as string[]).length === 3,
+        );
+        expect(chained).toHaveLength(1);
+        // The seed turn's closed text row leads; the run references
+        // exactly its own three steps.
+        expect(JSON.parse(chained[0].request_ids)).toEqual(
+          rows.map((r) => r.request_id).slice(-3),
+        );
+      } finally {
+        db.close();
+      }
+
+      // One transcript pair despite two executions.
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual(['teal local', 'mock reply', 'find both', 'both found']);
+    });
+
+    it('recovers a failed final across restart without re-executing', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'teal local' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      // The model keeps searching, so the step bound finalizes through
+      // resume(); the final call itself goes down. Distinct call ids
+      // like a real provider (reused ids would collide in validation).
+      for (let i = 0; i < 6; i++) {
+        chatWithTools.mockResolvedValueOnce(
+          searchCall('teal', 20, `call-${i}`),
+        );
+      }
+      chatWithTools.mockRejectedValueOnce(new Error('provider down'));
+      const turn = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'find teal', sessionId })
+        .expect(200);
+      const requestId = (turn.body as ConversationResponse).requestId;
+      expect((turn.body as ConversationResponse).status).toBe('ok');
+
+      // Simulate a Core restart against the same database files.
+      await app?.close();
+      app = await createApp(
+        join(dir, 'sessions.sqlite'),
+        join(dir, 'memories.sqlite'),
+      );
+
+      // The durable result answers; nothing re-executes, no LLM call.
+      chatWithTools.mockClear();
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).reply).toBe(
+        (turn.body as ConversationResponse).reply,
+      );
+      expect(chatWithTools).not.toHaveBeenCalled();
+
+      const history = await request(http())
+        .get(`/core/conversation/${sessionId}`)
+        .expect(200);
+      expect(
+        (history.body as HistoryResponse).messages.map((m) => m.content),
+      ).toEqual([
+        'teal local',
+        'mock reply',
+        'find teal',
+        (turn.body as ConversationResponse).reply,
+      ]);
+    });
+
+    it('cancels a parked run without touching the approval', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      // Find the parked run row for this turn (latest run, since the
+      // seed 'hello' turn has its own completed run).
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      let runId: string;
+      try {
+        const row = db
+          .prepare(
+            `SELECT id FROM agent_runs WHERE session_id = ? ORDER BY rowid DESC LIMIT 1`,
+          )
+          .get(sessionId) as { id: string };
+        runId = row.id;
+      } finally {
+        db.close();
+      }
+
+      const cancelled = await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({ sessionId, runId })
+        .expect(200);
+      expect(cancelled.body).toMatchObject({
+        runId,
+        sessionId,
+        state: 'cancelled',
+        cancelled: true,
+      });
+
+      // The approval is untouched: still pending, still resolvable.
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+
+      // Resuming resolves the parked turn through M8, but the
+      // cancelled run never continues planning: the legacy path
+      // finalizes the existing execution with a text answer
+      // (no new tool calls — tools stay empty).
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).status).toBe('ok');
+      const finalLlm = chatWithTools.mock.calls.find(
+        (call) =>
+          ((call[0] as { tools?: unknown[] }).tools?.length ?? -1) === 0,
+      );
+      expect(finalLlm).toBeDefined();
+
+      // Cancelling a completed run is a no-op success (already
+      // terminal; the legacy resume terminal above owns the state).
+      const again = await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({ sessionId, runId })
+        .expect(200);
+      expect(again.body).toMatchObject({ runId, sessionId });
+
+      // Unknown runs 404, foreign sessions 400.
+      await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({
+          sessionId,
+          runId: '11111111-1111-4111-8111-111111111111',
+        })
+        .expect(404);
+      await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({
+          sessionId: '22222222-2222-4222-8222-222222222222',
+          runId,
+        })
+        .expect(400);
+    });
+
+    it('resumes a parked approval across restart', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      // Restart while the approval is still pending.
+      await app?.close();
+      app = await createApp(
+        join(dir, 'sessions.sqlite'),
+        join(dir, 'memories.sqlite'),
+      );
+
+      // The approval survived; the resumed run continues planning.
+      chatWithTools.mockResolvedValueOnce(finalText('renamed after restart'));
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).status).toBe('ok');
+
+      const sessions = await request(http()).get('/core/sessions').expect(200);
+      const renamed = (
+        sessions.body as { sessions: { sessionId: string; title?: string }[] }
+      ).sessions.find((s) => s.sessionId === sessionId);
+      expect(renamed?.title).toBe('Ward map');
+    });
   });
 });

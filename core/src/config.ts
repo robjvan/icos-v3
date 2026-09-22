@@ -44,6 +44,12 @@ export interface CoreConfig {
   skillsMaxAutoLoadedPerTurn: number;
   /** Cap on total skill-body chars injected per turn (provisional). */
   skillsMaxContextChars: number;
+  /** Max proposal rounds per turn (M9g execution budget). */
+  agentMaxIterations: number;
+  /** Max tool executions per turn (M9g execution budget). */
+  agentMaxToolSteps: number;
+  /** Backstop turn duration in ms (M9g execution budget). */
+  agentMaxTurnDurationMs: number;
 }
 
 function parsePositiveInt(
@@ -136,6 +142,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
       env.SKILLS_MAX_CONTEXT_CHARS,
       8000,
       'SKILLS_MAX_CONTEXT_CHARS',
+    ),
+    agentMaxIterations: parsePositiveInt(
+      env.AGENT_MAX_ITERATIONS,
+      5,
+      'AGENT_MAX_ITERATIONS',
+    ),
+    agentMaxToolSteps: parsePositiveInt(
+      env.AGENT_MAX_TOOL_STEPS,
+      5,
+      'AGENT_MAX_TOOL_STEPS',
+    ),
+    agentMaxTurnDurationMs: parsePositiveInt(
+      env.AGENT_MAX_TURN_DURATION_MS,
+      15 * 60 * 1000,
+      'AGENT_MAX_TURN_DURATION_MS',
     ),
   };
 }

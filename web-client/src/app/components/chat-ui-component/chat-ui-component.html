@@ -1,0 +1,52 @@
+<div class="chat-shell">
+  <header class="chat-header">
+    <h1>ICOS</h1>
+    <span class="session-id mono" aria-label="Current session">{{ sessionLabel() }}</span>
+    <button type="button" class="new-btn" (click)="startNewSession()">
+      <svg lucidePlus [size]="14" aria-hidden="true"></svg>
+      New
+    </button>
+  </header>
+
+  <div class="chat-body">
+    <app-session-sidebar
+      [sessions]="store.sessions()"
+      [activeSessionId]="store.sessionId()"
+      [searchResults]="store.searchResults()"
+      (opened)="openSession($event)"
+      (newSession)="startNewSession()"
+    />
+
+    <div class="chat-main">
+      <div #scrollHost class="scroll-host" (scroll)="onScroll($event)">
+        <app-message-list
+          [messages]="store.messages()"
+          [pendingText]="store.pendingText()"
+          [pendingTyping]="store.pendingTyping()"
+        />
+      </div>
+
+      @if (store.approvals().length > 0) {
+        <div class="approvals" aria-label="Pending approvals">
+          @for (approval of store.approvals(); track approval.id) {
+            <app-approval-card [approval]="approval" (resolved)="resolveApproval($event)" />
+          }
+        </div>
+      }
+
+      @if (store.clarifications().length > 0) {
+        <div class="questions" aria-label="Pending questions">
+          @for (question of store.clarifications(); track question.id) {
+            <app-question-card
+              [clarification]="question"
+              (answered)="answerQuestion($event)"
+              (dismissed)="dismissQuestion($event)"
+            />
+          }
+        </div>
+      }
+
+      <app-composer [busy]="store.busy()" (submitted)="sendMessage($event)" />
+    </div>
+  </div>
+</div>

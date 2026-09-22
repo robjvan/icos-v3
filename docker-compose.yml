@@ -1,0 +1,87 @@
+services:
+  # ---------------------------------------------------------------------------
+  # ICOS v3 Core
+  # ---------------------------------------------------------------------------
+  core:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+
+    # models:
+    #   local_llm:
+    #     endpoint_var: LOCAL_LLM_BASE_URL
+    #     model_var: LOCAL_LLM_MODEL
+
+    ports:
+      - "3000:3000" # Temporary testing UI
+
+    env_file:
+      - ./core/.env
+
+    healthcheck:
+      # Verify that NestJS is actually responding rather than merely having its process running.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000', (res) => [200, 404].includes(res.statusCode) ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # ICOS v3 Angular web client
+  # ---------------------------------------------------------------------------
+  # Main application UI.
+  #
+  # This service waits for the core to become healthy before starting.
+  web-client:
+    build:
+      context: ./web-client
+      dockerfile: Dockerfile
+
+    ports:
+      - "4200:4200" # Angular
+
+    depends_on:
+      core:
+        condition: service_healthy
+
+    healthcheck:
+      # Confirm that the Angular application is serving its root document.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:4200/', (res) => res.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # # ---------------------------------------------------------------------------
+  # # Docker Model Runner
+  # # ---------------------------------------------------------------------------
+  # docker-model-runner:
+  #   image: curlimages/curl:latest
+
+  #   models:
+  #     local_llm:
+  #       endpoint_var: LOCAL_LLM_BASE_URL
+  #       model_var: LOCAL_LLM_MODEL
+
+  #   command: >
+  #     sh -c '
+  #       echo "URL=$$LOCAL_LLM_BASE_URL";
+  #       echo "MODEL=$$LOCAL_LLM_MODEL";
+  #       sleep infinity
+  #     '
+
+# models:
+#   local_llm:
+#     model: hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_K_M

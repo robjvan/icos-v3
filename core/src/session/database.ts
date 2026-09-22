@@ -126,7 +126,154 @@ CREATE TABLE IF NOT EXISTS clarification_events (
 
 CREATE INDEX IF NOT EXISTS idx_clarification_events_clarification
 ON clarification_events(clarification_id);
+
+CREATE TABLE IF NOT EXISTS tool_requests (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+    invocation_id TEXT UNIQUE,
+    approval_id TEXT UNIQUE REFERENCES approvals(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK (state IN (
+        'closed', 'invalid', 'validated', 'awaiting_approval',
+        'executing', 'succeeded', 'failed',
+        'rejected', 'cancelled', 'expired'
+    )),
+    validation_json TEXT NOT NULL CHECK (json_valid(validation_json)),
+    execution_token TEXT,
+    ownership TEXT NOT NULL DEFAULT 'unconfirmed' CHECK (ownership IN ('unconfirmed', 'released')),
+    execution_json TEXT CHECK (execution_json IS NULL OR (
+        json_valid(execution_json) AND length(CAST(execution_json AS BLOB)) <= 65536
+    )),
+    final_state TEXT NOT NULL CHECK (final_state IN (
+        'not_required', 'pending', 'claimed', 'succeeded', 'failed'
+    )),
+    final_token TEXT,
+    final_json TEXT NOT NULL CHECK (json_valid(final_json)),
+    transcript_state TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written')),
+    CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
+    CHECK (state != 'awaiting_approval' OR approval_id IS NOT NULL),
+    CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
+    CHECK (state != 'executing' OR execution_token IS NOT NULL),
+    CHECK (ownership = 'unconfirmed' OR state = 'executing'),
+    CHECK (final_state NOT IN ('pending', 'claimed', 'succeeded', 'failed') OR execution_json IS NOT NULL),
+    CHECK (final_state != 'claimed' OR final_token IS NOT NULL)
+);
+
+CREATE TRIGGER IF NOT EXISTS tool_requests_identity_immutable
+BEFORE UPDATE OF request_id, session_id, input_json, invocation_id ON tool_requests
+BEGIN
+    SELECT RAISE(ABORT, 'immutable tool request');
+END;
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    goal TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'created', 'reasoning', 'action_proposed', 'executing',
+        'observing', 'awaiting_approval',
+        'completed', 'failed', 'cancelled', 'budget_exhausted'
+    )),
+    request_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(request_ids)),
+    current_request_id TEXT,
+    iteration_count INTEGER NOT NULL DEFAULT 0,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    limits_json TEXT NOT NULL CHECK (json_valid(limits_json)),
+    approval_id TEXT,
+    termination_json TEXT CHECK (
+        termination_json IS NULL OR json_valid(termination_json)
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session
+ON agent_runs(session_id);
 `;
+
+/**
+ * Post-M8d `tool_requests` definition, used to rebuild pre-M8d tables
+ * whose CHECK constraints cannot be altered in place. The base schema
+ * above stays `IF NOT EXISTS`-safe for old files; `migrateToolRequests`
+ * swaps in this definition while preserving rows.
+ */
+const TOOL_REQUESTS_TABLE_SQL = `
+CREATE TABLE tool_requests (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+    invocation_id TEXT UNIQUE,
+    approval_id TEXT UNIQUE REFERENCES approvals(id) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK (state IN (
+        'closed', 'invalid', 'validated', 'awaiting_approval',
+        'executing', 'succeeded', 'failed',
+        'rejected', 'cancelled', 'expired'
+    )),
+    validation_json TEXT NOT NULL CHECK (json_valid(validation_json)),
+    execution_token TEXT,
+    ownership TEXT NOT NULL DEFAULT 'unconfirmed' CHECK (ownership IN ('unconfirmed', 'released')),
+    execution_json TEXT CHECK (execution_json IS NULL OR (
+        json_valid(execution_json) AND length(CAST(execution_json AS BLOB)) <= 65536
+    )),
+    final_state TEXT NOT NULL CHECK (final_state IN (
+        'not_required', 'pending', 'claimed', 'succeeded', 'failed'
+    )),
+    final_token TEXT,
+    final_json TEXT NOT NULL CHECK (json_valid(final_json)),
+    transcript_state TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written')),
+    CHECK (state NOT IN ('executing', 'succeeded', 'failed') OR invocation_id IS NOT NULL),
+    CHECK (state != 'awaiting_approval' OR approval_id IS NOT NULL),
+    CHECK ((state IN ('succeeded', 'failed')) = (execution_json IS NOT NULL)),
+    CHECK (state != 'executing' OR execution_token IS NOT NULL),
+    CHECK (ownership = 'unconfirmed' OR state = 'executing'),
+    CHECK (final_state NOT IN ('pending', 'claimed', 'succeeded', 'failed') OR execution_json IS NOT NULL),
+    CHECK (final_state != 'claimed' OR final_token IS NOT NULL)
+);
+`;
+
+/** Post-M9b `agent_runs` definition: the full lifecycle state set. */
+const AGENT_RUNS_TABLE_SQL = `
+CREATE TABLE agent_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    goal TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'created', 'reasoning', 'action_proposed', 'executing',
+        'observing', 'awaiting_approval',
+        'completed', 'failed', 'cancelled', 'budget_exhausted'
+    )),
+    request_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(request_ids)),
+    current_request_id TEXT,
+    iteration_count INTEGER NOT NULL DEFAULT 0,
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    limits_json TEXT NOT NULL CHECK (json_valid(limits_json)),
+    approval_id TEXT,
+    termination_json TEXT CHECK (
+        termination_json IS NULL OR json_valid(termination_json)
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`;
+
+const AGENT_RUNS_COLUMNS =
+  'id, session_id, goal, state, request_ids, current_request_id, ' +
+  'iteration_count, tool_call_count, limits_json, approval_id, ' +
+  'termination_json, created_at, updated_at';
+
+/** Full-column immutability guard converged on by `migrateToolRequests`. */
+const TOOL_REQUESTS_IMMUTABLE_TRIGGER_SQL = `
+CREATE TRIGGER tool_requests_identity_immutable
+BEFORE UPDATE OF request_id, session_id, input_json, invocation_id, approval_id ON tool_requests
+BEGIN
+    SELECT RAISE(ABORT, 'immutable tool request');
+END;
+`;
+
+const TOOL_REQUESTS_COLUMNS =
+  'request_id, session_id, input_json, invocation_id, state, ' +
+  'validation_json, execution_token, ownership, execution_json, ' +
+  'final_state, final_token, final_json';
 
 /**
  * Memory candidate evidence ledger schema. Observations about what might
@@ -183,8 +330,15 @@ const SCHEMAS: Record<
       'approval_events',
       'clarifications',
       'clarification_events',
+      'tool_requests',
+      'agent_runs',
     ],
-    triggers: ['messages_ai', 'messages_ad', 'messages_au'],
+    triggers: [
+      'messages_ai',
+      'messages_ad',
+      'messages_au',
+      'tool_requests_identity_immutable',
+    ],
   },
   memories: {
     sql: MEMORIES_SCHEMA_SQL,
@@ -232,7 +386,106 @@ function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
       'excluded_from_context',
       'INTEGER NOT NULL DEFAULT 0',
     );
+    migrateToolRequests(db);
+    migrateAgentRuns(db);
+    addColumnIfMissing(
+      db,
+      'tool_requests',
+      'transcript_state',
+      `TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written'))`,
+    );
   }
+}
+
+/**
+ * M8d upgrade for the M8c-era `tool_requests` table: pre-M8d tables
+ * lack `approval_id` and the mirrored terminal states (`rejected`,
+ * `cancelled`, `expired`), and CHECK constraints cannot be altered in
+ * place. Rebuilds the table preserving every row, then converges the
+ * immutability trigger on the full column list. Fresh databases take
+ * the same path for the trigger. Idempotent: current tables are left
+ * alone.
+ */
+function migrateToolRequests(db: Database.Database): void {
+  const table = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tool_requests'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (!table) return;
+  const columns = db.prepare(`PRAGMA table_info(tool_requests)`).all() as {
+    name: string;
+  }[];
+  const names = new Set(columns.map((column) => column.name));
+  if (names.has('approval_id') && table.sql.includes(`'rejected'`)) {
+    ensureToolRequestsTrigger(db);
+    return;
+  }
+  db.transaction(() => {
+    db.exec(`ALTER TABLE tool_requests RENAME TO tool_requests_legacy;`);
+    if (!names.has('approval_id')) {
+      // Pre-M8d parks never created an approval, so nothing can ever
+      // authorize them; drop rather than carry un-actionable rows.
+      db.exec(
+        `DELETE FROM tool_requests_legacy WHERE state = 'awaiting_approval';`,
+      );
+    }
+    db.exec(TOOL_REQUESTS_TABLE_SQL);
+    db.exec(
+      `INSERT INTO tool_requests (${TOOL_REQUESTS_COLUMNS})
+       SELECT ${TOOL_REQUESTS_COLUMNS} FROM tool_requests_legacy;`,
+    );
+    db.exec(`DROP TABLE tool_requests_legacy;`);
+  }).immediate();
+  ensureToolRequestsTrigger(db);
+}
+
+/**
+ * M9b upgrade for the M9a-era `agent_runs` table: pre-M9b tables only
+ * know the provisional states (`running`, `awaiting_approval`,
+ * `completed`, `failed`), and CHECK constraints cannot be altered in
+ * place. Rebuilds the table preserving every row. Rows stranded in
+ * provisional `running` never reached a terminal state (crash or
+ * pre-lifecycle code), so they are recorded as failed with their
+ * executed tool count; every other state carries over unchanged.
+ * Idempotent: current tables are left alone.
+ */
+function migrateAgentRuns(db: Database.Database): void {
+  const table = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (!table) return;
+  if (table.sql.includes(`'budget_exhausted'`)) return;
+  db.transaction(() => {
+    db.exec(`ALTER TABLE agent_runs RENAME TO agent_runs_legacy;`);
+    db.exec(AGENT_RUNS_TABLE_SQL);
+    db.exec(
+      `INSERT INTO agent_runs (${AGENT_RUNS_COLUMNS})
+       SELECT id, session_id, goal,
+         CASE WHEN state = 'running' THEN 'failed' ELSE state END,
+         request_ids, current_request_id, iteration_count, tool_call_count,
+         limits_json, approval_id,
+         CASE WHEN state = 'running'
+           THEN '{"reason":"turn_error","toolSteps":' || tool_call_count || '}'
+           ELSE termination_json END,
+         created_at, updated_at
+       FROM agent_runs_legacy;`,
+    );
+    db.exec(`DROP TABLE agent_runs_legacy;`);
+  }).immediate();
+}
+
+function ensureToolRequestsTrigger(db: Database.Database): void {
+  const trigger = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'tool_requests_identity_immutable'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (trigger && trigger.sql.includes('approval_id')) return;
+  db.exec(`DROP TRIGGER IF EXISTS tool_requests_identity_immutable;`);
+  db.exec(TOOL_REQUESTS_IMMUTABLE_TRIGGER_SQL);
 }
 
 function addColumnIfMissing(

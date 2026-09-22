@@ -215,6 +215,260 @@ describe('openDatabase', () => {
     // Re-open is idempotent.
     openDatabase(path, 'sessions').close();
   });
+
+  it('rebuilds pre-M8d tool_requests, preserving rows and converging the trigger', () => {
+    // Simulate an M8c-era database: no approval_id, no mirrored
+    // terminal states, four-column immutability trigger.
+    const path = join(dir, 'm8c.sqlite');
+    const old = new Database(path);
+    try {
+      old.exec(`
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            title TEXT
+        );
+        CREATE TABLE approvals (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            expires_at TEXT,
+            resolved_at TEXT,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE TABLE tool_requests (
+            request_id TEXT PRIMARY KEY NOT NULL,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+            input_json TEXT NOT NULL,
+            invocation_id TEXT UNIQUE,
+            state TEXT NOT NULL,
+            validation_json TEXT NOT NULL,
+            execution_token TEXT,
+            ownership TEXT NOT NULL DEFAULT 'unconfirmed',
+            execution_json TEXT,
+            final_state TEXT NOT NULL,
+            final_token TEXT,
+            final_json TEXT NOT NULL
+        );
+        CREATE TRIGGER tool_requests_identity_immutable
+        BEFORE UPDATE OF request_id, session_id, input_json, invocation_id ON tool_requests
+        BEGIN
+            SELECT RAISE(ABORT, 'immutable tool request');
+        END;
+      `);
+      old
+        .prepare(
+          'INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)',
+        )
+        .run('s1', 't', 't');
+      const insert = old.prepare(
+        `INSERT INTO tool_requests
+          (request_id, session_id, input_json, invocation_id, state,
+           validation_json, execution_json, final_state, final_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run(
+        'kept',
+        's1',
+        '{"requestId":"kept"}',
+        'inv-1',
+        'succeeded',
+        '{"ok":true}',
+        '{"ok":true,"matches":[]}',
+        'pending',
+        '{"state":"pending"}',
+      );
+      insert.run(
+        'parked',
+        's1',
+        '{"requestId":"parked"}',
+        'inv-2',
+        'awaiting_approval',
+        '{"ok":true}',
+        null,
+        'not_required',
+        '{"state":"not_required"}',
+      );
+    } finally {
+      old.close();
+    }
+
+    const db = openDatabase(path, 'sessions');
+    try {
+      const columns = (
+        db.prepare('PRAGMA table_info(tool_requests)').all() as {
+          name: string;
+        }[]
+      ).map((row) => row.name);
+      expect(columns).toContain('approval_id');
+      // Completed rows survive with a null binding.
+      expect(
+        db
+          .prepare(
+            'SELECT request_id, approval_id FROM tool_requests WHERE request_id = ?',
+          )
+          .get('kept'),
+      ).toEqual({ request_id: 'kept', approval_id: null });
+      // Approval-less parks are un-actionable and do not survive.
+      expect(
+        db.prepare('SELECT COUNT(*) AS n FROM tool_requests').get() as {
+          n: number;
+        },
+      ).toEqual({ n: 1 });
+      // Mirrored terminal states are accepted now.
+      db.prepare(
+        `INSERT INTO tool_requests
+          (request_id, session_id, input_json, state,
+           validation_json, final_state, final_json)
+         VALUES (?, ?, ?, 'rejected', ?, 'not_required', ?)`,
+      ).run(
+        'mirrored',
+        's1',
+        '{"requestId":"mirrored"}',
+        '{"ok":false}',
+        '{"state":"not_required"}',
+      );
+      // The converged trigger guards the binding column too.
+      expect(() =>
+        db
+          .prepare(
+            "UPDATE tool_requests SET approval_id = 'x' WHERE request_id = 'kept'",
+          )
+          .run(),
+      ).toThrow('immutable tool request');
+    } finally {
+      db.close();
+    }
+    // Re-open is idempotent.
+    openDatabase(path, 'sessions').close();
+  });
+
+  it('rebuilds pre-M9b agent_runs, mapping stranded running rows to failed', () => {
+    // Simulate an M9a-era database: provisional lifecycle states only.
+    const path = join(dir, 'm9a.sqlite');
+    const old = new Database(path);
+    try {
+      old.exec(`
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            title TEXT
+        );
+        CREATE TABLE agent_runs (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            goal TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN (
+                'running', 'awaiting_approval', 'completed', 'failed'
+            )),
+            request_ids TEXT NOT NULL DEFAULT '[]',
+            current_request_id TEXT,
+            iteration_count INTEGER NOT NULL DEFAULT 0,
+            tool_call_count INTEGER NOT NULL DEFAULT 0,
+            limits_json TEXT NOT NULL,
+            approval_id TEXT,
+            termination_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+      `);
+      old
+        .prepare(
+          'INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)',
+        )
+        .run('s1', 't', 't');
+      const insert = old.prepare(
+        `INSERT INTO agent_runs
+          (id, session_id, goal, state, request_ids, current_request_id,
+           iteration_count, tool_call_count, limits_json, approval_id,
+           termination_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run(
+        'stranded',
+        's1',
+        'crashed turn',
+        'running',
+        '["req-1"]',
+        'req-1',
+        1,
+        2,
+        '{"maxToolSteps":5}',
+        null,
+        null,
+        't',
+        't',
+      );
+      insert.run(
+        'parked',
+        's1',
+        'rename it',
+        'awaiting_approval',
+        '["req-2"]',
+        'req-2',
+        1,
+        1,
+        '{"maxToolSteps":5}',
+        'appr-1',
+        null,
+        't',
+        't',
+      );
+    } finally {
+      old.close();
+    }
+
+    const db = openDatabase(path, 'sessions');
+    try {
+      const rows = db
+        .prepare(
+          `SELECT id, state, tool_call_count, termination_json
+           FROM agent_runs ORDER BY id`,
+        )
+        .all() as {
+        id: string;
+        state: string;
+        tool_call_count: number;
+        termination_json: string | null;
+      }[];
+      // Stranded provisional rows become failed with their executed count.
+      expect(rows).toEqual([
+        {
+          id: 'parked',
+          state: 'awaiting_approval',
+          tool_call_count: 1,
+          termination_json: null,
+        },
+        {
+          id: 'stranded',
+          state: 'failed',
+          tool_call_count: 2,
+          termination_json: '{"reason":"turn_error","toolSteps":2}',
+        },
+      ]);
+      // The new lifecycle states are accepted now.
+      db.prepare(
+        `UPDATE agent_runs SET state = 'observing' WHERE id = 'parked'`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `UPDATE agent_runs SET state = 'running' WHERE id = 'parked'`,
+          )
+          .run(),
+      ).toThrow();
+    } finally {
+      db.close();
+    }
+    // Re-open is idempotent.
+    openDatabase(path, 'sessions').close();
+  });
 });
 
 describe('migrateLegacyDatabase', () => {

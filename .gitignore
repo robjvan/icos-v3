@@ -3,3 +3,12 @@
 
 # VSCodeCounter files
 .VSCodeCounter
+
+# Environment variables
+**/.env
+
+# Environment config
+**/.vscode
+
+# Agent spec blueprint files
+.reference/web-client-blueprint.md

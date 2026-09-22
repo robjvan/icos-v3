@@ -1,0 +1,31 @@
+<div class="question-card" role="group" [attr.aria-label]="clarification().question">
+  <div class="question">{{ clarification().question }}</div>
+  @if (hasOptions()) {
+    <div class="options" role="radiogroup">
+      @for (option of options(); track option; let i = $index) {
+        <label>
+          <input
+            type="radio"
+            [name]="'q-' + clarification().id"
+            [value]="option"
+            [checked]="isChecked(option, i)"
+            (change)="selectOption(option)"
+          />
+          {{ option }}
+        </label>
+      }
+    </div>
+  } @else {
+    <input
+      #answerBox
+      type="text"
+      placeholder="Your answer..."
+      [attr.aria-label]="'Answer to: ' + clarification().question"
+      (input)="onFreeText(answerBox.value)"
+    />
+  }
+  <div class="row">
+    <button type="button" (click)="submit()">Answer</button>
+    <button type="button" class="dismiss" (click)="dismiss()">Dismiss</button>
+  </div>
+</div>

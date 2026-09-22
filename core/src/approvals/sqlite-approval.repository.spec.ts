@@ -35,6 +35,9 @@ function testConfig(sessionDbPath: string, dir: string): CoreConfig {
     skillsMaxActivePerSession: 5,
     skillsMaxAutoLoadedPerTurn: 2,
     skillsMaxContextChars: 8000,
+    agentMaxIterations: 5,
+    agentMaxToolSteps: 5,
+    agentMaxTurnDurationMs: 900000,
   };
 }
 

@@ -5,7 +5,12 @@ import {
   IsUUID,
   MaxLength,
 } from 'class-validator';
-import type { CommandPayload } from '../conversation.service';
+import type {
+  ApprovalSummary,
+  CommandPayload,
+  ToolSummary,
+  TurnStatus,
+} from '../conversation.service';
 import type { HistoryMessage } from '../session.store';
 
 export class ConversationRequestDto {
@@ -19,11 +24,40 @@ export class ConversationRequestDto {
   sessionId?: string;
 }
 
-export class ConversationResponseDto {
+export class ResumeRequestDto {
+  @IsUUID()
   sessionId!: string;
+
+  @IsUUID()
+  requestId!: string;
+}
+
+export class CancelRunRequestDto {
+  @IsUUID()
+  sessionId!: string;
+
+  @IsUUID()
+  runId!: string;
+}
+
+export interface CancelRunResponse {
+  runId: string;
+  sessionId: string;
+  state: string;
+  cancelled: boolean;
+}
+
+export class ConversationResponseDto {
+  status!: TurnStatus;
+  sessionId!: string;
+  requestId?: string;
   reply!: string;
   model!: string;
   command?: CommandPayload;
+  tool?: ToolSummary;
+  approval?: ApprovalSummary;
+  outcome?: 'rejected' | 'cancelled' | 'expired';
+  result?: unknown;
 }
 
 export class ConversationHistoryResponseDto {

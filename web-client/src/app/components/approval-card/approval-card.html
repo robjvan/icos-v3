@@ -1,0 +1,10 @@
+<div class="approval-card" role="group" [attr.aria-label]="'Approval required: ' + approval().action">
+  <div class="action">Approval required: {{ approval().action }}</div>
+  @if (approval().description) {
+    <div class="description">{{ approval().description }}</div>
+  }
+  <div class="row">
+    <button type="button" (click)="approve()">Approve</button>
+    <button type="button" class="reject" (click)="reject()">Reject</button>
+  </div>
+</div>

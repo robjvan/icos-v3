@@ -1,0 +1,10 @@
+<div class="messages" role="log" aria-label="Conversation transcript" aria-live="polite">
+  @for (message of messages(); track $index) {
+    <div [class]="bubbleClass(message.role)" [class.excluded]="message.excludedFromContext" [attr.title]="bubbleTitle(message)">
+      {{ message.content }}
+    </div>
+  }
+  @if (visiblePending()) {
+    <div class="message assistant" [class.typing]="pendingTyping()">{{ pendingText() }}</div>
+  }
+</div>
