@@ -518,7 +518,14 @@ If the model fails after a tool has executed:
 
 ---
 
-# [ ] M9j — Repetition and Loop Protection
+# [x] M9j — Repetition and Loop Protection (implemented September 22, 2026)
+
+Implemented as pre-validation skip: identical single calls (name +
+deep-equal args) return a `repeated_call` error observation with no
+ledger row, no execution, no approval, in all four loops; skipped
+steps still record their request id. Fan-out still fails closed.
+Unrestricted repetition terminates at the step bound. Evidence:
+`milestone-9j-evidence-loop-protection.md`.
 
 The agent should detect obvious pathological repetition.
 
@@ -546,7 +553,14 @@ This is both a safety mechanism and an important experimental signal.
 
 ---
 
-# [ ] M9k — Agent Context Construction
+# [x] M9k — Agent Context Construction (implemented September 22, 2026)
+
+Implemented as per-round assembly: `prepareTurn` splits the static
+system base from the rest; every proposal round rebuilds via
+`assembleStep` with a fresh planning block carrying progress (steps
+used, remaining, prior actions, approval state). Skill bodies stay
+frozen per turn; prompt/catalog refresh. No epistemic memory.
+Evidence: `milestone-9k-evidence-context.md`.
 
 Construct the model context required for each reasoning step.
 
