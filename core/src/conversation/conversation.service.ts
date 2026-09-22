@@ -622,6 +622,28 @@ export class ConversationService {
     }
   }
 
+  /**
+   * User-initiated cancellation of an agent run. Marks the run
+   * terminal (`cancelled`) without touching M8 state: executing
+   * invocations stay M8-governed, parked approvals keep their own
+   * semantics and can still be approved or rejected afterwards.
+   * Throws NotFound for unknown runs, BadRequest for foreign sessions.
+   */
+  cancelRun(runId: string, sessionId: string): AgentRun {
+    let run: AgentRun;
+    try {
+      run = this.agentRuns.get(runId);
+    } catch {
+      throw new NotFoundException(`Unknown agent run "${runId}"`);
+    }
+    if (run.sessionId !== sessionId) {
+      throw new BadRequestException('Agent run belongs to another session.');
+    }
+    const cancelled = this.agentRuns.cancelRun(runId);
+    if (cancelled) return cancelled;
+    return this.agentRuns.get(runId);
+  }
+
   async history(sessionId: string): Promise<{
     sessionId: string;
     messages: HistoryMessage[];

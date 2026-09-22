@@ -32,6 +32,21 @@ export class ResumeRequestDto {
   requestId!: string;
 }
 
+export class CancelRunRequestDto {
+  @IsUUID()
+  sessionId!: string;
+
+  @IsUUID()
+  runId!: string;
+}
+
+export interface CancelRunResponse {
+  runId: string;
+  sessionId: string;
+  state: string;
+  cancelled: boolean;
+}
+
 export class ConversationResponseDto {
   status!: TurnStatus;
   sessionId!: string;

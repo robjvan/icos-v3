@@ -1038,33 +1038,34 @@ describe('ConversationService', () => {
     });
 
     it('completes the parked run on resume', async () => {
-      const { service, agentRuns, tools } = setup();
-      agentRuns.findByRequest.mockReturnValue({ id: 'run-9' });
-      tools.resume.mockImplementation((requestId: string) =>
-        Promise.resolve(
-          searchRecord(
-            {
-              requestId,
-              sessionId: 's-1',
-              context: [{ role: 'user', content: 'find teal' }],
-              allowedTools: ['session.search'],
-              proposal: searchProposal(),
-            },
-            'teal found',
+      const { service, agentRuns, tools } = setup(
+        testConfig(),
+        () => Promise.resolve(textProposal('teal found again')),
+        undefined,
+        undefined,
+        (input) =>
+          Promise.resolve(
+            input.proposal.kind === 'text'
+              ? closedTextRecord(input)
+              : searchRecord(input, 'teal found'),
           ),
-        ),
       );
+      agentRuns.findByRequest.mockReturnValue(
+        testRun({ state: 'awaiting_approval' }),
+      );
+      tools.resume.mockImplementation(() => Promise.resolve(approvedRename()));
 
       const result = await service.resumeTurn('req-1', 's-1');
 
       expect(result.status).toBe('ok');
+      expect(result.reply).toBe('teal found again');
       expect(agentRuns.findByRequest).toHaveBeenCalledWith('s-1', 'req-1');
       expect(agentRuns.markTerminal).toHaveBeenCalledWith(
         'run-9',
         'completed',
         {
           reason: 'final_answer',
-          toolSteps: 0,
+          toolSteps: 1,
         },
       );
     });
@@ -1500,6 +1501,58 @@ describe('ConversationService', () => {
       expect(tools.consume).toHaveBeenCalledTimes(1);
       expect(tools.consume.mock.calls[0][0].proposal.kind).toBe('text');
       expect(agentRuns.markParked).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('run cancellation', () => {
+    it('cancels a parked run and blocks its continuation', async () => {
+      const { service, repository, agentRuns, tools } = setup(
+        testConfig(),
+        () => Promise.resolve(renameProposal()),
+        undefined,
+        undefined,
+        (input) => Promise.resolve(pendingRenameRecord(input)),
+      );
+      agentRuns.get.mockReturnValue(testRun());
+      agentRuns.cancelRun.mockReturnValue(testRun({ state: 'cancelled' }));
+
+      const cancelled = service.cancelRun('run-9', 's-1');
+
+      expect(cancelled.state).toBe('cancelled');
+      expect(agentRuns.markTerminal).not.toHaveBeenCalled();
+
+      // The parked turn still resolves through M8 (approval semantics
+      // untouched), but the run never continues planning: legacy path.
+      agentRuns.findByRequest.mockReturnValue(testRun({ state: 'cancelled' }));
+      tools.resume.mockImplementation((requestId: string) =>
+        Promise.resolve(
+          searchRecord(
+            {
+              requestId,
+              sessionId: 's-1',
+              context: [{ role: 'user', content: 'find teal' }],
+              allowedTools: ['session.search'],
+              proposal: searchProposal(),
+            },
+            'teal found',
+          ),
+        ),
+      );
+      const result = await service.resumeTurn('req-1', 's-1');
+      expect(result.status).toBe('ok');
+      expect(await repository.getMessages('s-1')).toHaveLength(2);
+    });
+
+    it('rejects unknown runs and foreign sessions', () => {
+      const { service, agentRuns } = setup();
+      agentRuns.get.mockImplementation(() => {
+        throw new Error('agent_run_not_found');
+      });
+      expect(() => service.cancelRun('nope', 's-1')).toThrow(NotFoundException);
+      agentRuns.get.mockReturnValue({ ...testRun(), sessionId: 'other' });
+      expect(() => service.cancelRun('run-9', 's-1')).toThrow(
+        BadRequestException,
+      );
     });
   });
 

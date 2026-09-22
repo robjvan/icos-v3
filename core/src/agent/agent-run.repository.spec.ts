@@ -160,6 +160,39 @@ describe('AgentRunRepository SQLite', () => {
     expect(runs.findByRequest('other', 'req-1')).toBeUndefined();
   });
 
+  it('cancels running and parked runs, never terminal ones', () => {
+    const { runs } = open();
+    const active = runs.createRun({
+      sessionId: 's1',
+      goal: 'find teal',
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
+    });
+    runs.recordStep(active.id, { requestId: 'req-1', toolCalls: 1 });
+    runs.recordStep(active.id, { requestId: 'req-2', toolCalls: 1 });
+    const cancelled = runs.cancelRun(active.id);
+    expect(cancelled).toMatchObject({ state: 'cancelled' });
+    expect(cancelled?.termination).toEqual({
+      reason: 'cancelled',
+      toolSteps: 2,
+    });
+    // Idempotent: already terminal.
+    expect(runs.cancelRun(active.id)).toBeUndefined();
+    expect(() => runs.cancelRun('missing')).toThrow('agent_run_not_found');
+
+    const parked = runs.createRun({
+      sessionId: 's1',
+      goal: 'rename it',
+      limits: { maxIterations: 5, maxToolSteps: 5, maxTurnDurationMs: 900000 },
+    });
+    runs.recordStep(parked.id, { requestId: 'req-3', toolCalls: 1 });
+    runs.markParked(parked.id, 'appr-1');
+    const cancelledParked = runs.cancelRun(parked.id);
+    expect(cancelledParked).toMatchObject({
+      state: 'cancelled',
+      approvalId: 'appr-1',
+    });
+  });
+
   it('rejects unknown runs and cascades with the session', () => {
     const { database, runs } = open();
     expect(() =>

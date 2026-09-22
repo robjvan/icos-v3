@@ -16,6 +16,7 @@ import type {
   TurnOutcome,
 } from './conversation.service';
 import {
+  CancelRunRequestDto,
   ConversationHistoryResponseDto,
   ConversationRequestDto,
   ConversationResponseDto,
@@ -103,6 +104,23 @@ export class ConversationController {
       send.signal.signal,
     );
     send.end();
+  }
+
+  /**
+   * Cancel an agent run. Terminal and immediate: the run never plans
+   * again, but M8 invocation state is untouched (executing rows stay
+   * M8-governed; parked approvals resolve normally afterwards).
+   */
+  @Post('runs/cancel')
+  @HttpCode(200)
+  cancelRun(@Body() dto: CancelRunRequestDto) {
+    const run = this.conversation.cancelRun(dto.runId, dto.sessionId);
+    return {
+      runId: run.id,
+      sessionId: run.sessionId,
+      state: run.state,
+      cancelled: run.state === 'cancelled',
+    };
   }
 
   private sse(

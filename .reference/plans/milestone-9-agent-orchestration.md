@@ -1,3 +1,9 @@
+# Milestone 9 — COMPLETE (September 22, 2026)
+
+All 14 slices (M9a–M9n) implemented with unit + e2e + live evidence
+committed to `.reference/plans/evidence/`. Verification: 511 unit
+tests, 44 e2e tests, `tsc` + `eslint` clean at close.
+
 # ICOS v3 — Milestone 9: Agent Orchestration
 
 ## Objective
@@ -583,7 +589,14 @@ M9 should not implement epistemic memory.
 
 ---
 
-# [ ] M9l — Cancellation and Restart
+# [x] M9l — Cancellation and Restart (implemented September 21, 2026)
+
+Implemented as an explicit cancel endpoint plus proven restart
+recovery: `POST /core/conversation/runs/cancel` marks runs terminal
+without touching M8 state (parked approvals still resolve;
+cancelled runs never continue planning). Killed-mid-park restart
+recovers run, approval, and ledger rows with no re-execution.
+Evidence: `milestone-9l-evidence-cancel-restart.md`.
 
 Agent runs must have truthful behavior across cancellation and restart.
 
@@ -686,7 +699,12 @@ agent waiting for approval
 
 ---
 
-# [ ] M9n — End-to-End Demonstrations
+# [x] M9n — End-to-End Demonstrations (implemented September 21, 2026)
+
+Evidence-only closing slice: all five flows (single-step,
+multi-step, approval-gated, recovery, bounded repeat) in one
+session against a real provider on the current tree. No new code.
+Evidence: `milestone-9n-evidence-demonstrations.md`.
 
 M9 should produce several small but meaningful demonstrations.
 
@@ -839,3 +857,21 @@ Increasingly broad interfaces, autonomy, and environmental interaction.
 ```
 
 Do not solve later milestones while implementing M9.
+
+---
+
+# Close-out (September 22, 2026)
+
+M9 is complete. Every slice is marked `[x]` above with its evidence
+file. The Definition of Done holds: the model selects and executes
+multiple permitted actions sequentially through M8, observes actual
+results, pauses for approval, recovers from bounded failures,
+enforces limits, and terminates with truthful persisted state —
+demonstrated end to end in `milestone-9n-evidence-demonstrations.md`.
+
+Known limits carried forward (all documented in slice evidence):
+duplicate-POST runs are not deduped; cancel governs planning, not
+already-authorized execution; non-stream turns cannot cancel
+mid-flight; in-flight `executing` kill drill never staged live
+(search claims resolve in ms); token usage/cost untracked by design;
+no run read API yet; no cancel UI surface (endpoint only).

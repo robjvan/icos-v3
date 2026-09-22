@@ -1721,6 +1721,94 @@ describe('Conversation (e2e)', () => {
       ]);
     });
 
+    it('cancels a parked run without touching the approval', async () => {
+      const first = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'hello' })
+        .expect(200);
+      const sessionId = (first.body as ConversationResponse).sessionId;
+
+      chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
+      const parked = await request(http())
+        .post('/core/conversation')
+        .send({ message: 'rename it', sessionId })
+        .expect(202);
+      const pending = parked.body as ConversationResponse;
+
+      // Find the parked run row for this turn (latest run, since the
+      // seed 'hello' turn has its own completed run).
+      const db = new Database(join(dir, 'sessions.sqlite'), {
+        readonly: true,
+      });
+      let runId: string;
+      try {
+        const row = db
+          .prepare(
+            `SELECT id FROM agent_runs WHERE session_id = ? ORDER BY rowid DESC LIMIT 1`,
+          )
+          .get(sessionId) as { id: string };
+        runId = row.id;
+      } finally {
+        db.close();
+      }
+
+      const cancelled = await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({ sessionId, runId })
+        .expect(200);
+      expect(cancelled.body).toMatchObject({
+        runId,
+        sessionId,
+        state: 'cancelled',
+        cancelled: true,
+      });
+
+      // The approval is untouched: still pending, still resolvable.
+      await request(http())
+        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
+        .send({ sessionId })
+        .expect(200);
+
+      // Resuming resolves the parked turn through M8, but the
+      // cancelled run never continues planning: the legacy path
+      // finalizes the existing execution with a text answer
+      // (no new tool calls — tools stay empty).
+      const resumed = await request(http())
+        .post('/core/conversation/resume')
+        .send({ sessionId, requestId: pending.requestId })
+        .expect(200);
+      expect((resumed.body as ConversationResponse).status).toBe('ok');
+      const finalLlm = chatWithTools.mock.calls.find(
+        (call) =>
+          ((call[0] as { tools?: unknown[] }).tools?.length ?? -1) === 0,
+      );
+      expect(finalLlm).toBeDefined();
+
+      // Cancelling a completed run is a no-op success (already
+      // terminal; the legacy resume terminal above owns the state).
+      const again = await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({ sessionId, runId })
+        .expect(200);
+      expect(again.body).toMatchObject({ runId, sessionId });
+
+      // Unknown runs 404, foreign sessions 400.
+      await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({
+          sessionId,
+          runId: '11111111-1111-4111-8111-111111111111',
+        })
+        .expect(404);
+      await request(http())
+        .post('/core/conversation/runs/cancel')
+        .send({
+          sessionId: '22222222-2222-4222-8222-222222222222',
+          runId,
+        })
+        .expect(400);
+    });
+
     it('resumes a parked approval across restart', async () => {
       const first = await request(http())
         .post('/core/conversation')

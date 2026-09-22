@@ -1,6 +1,9 @@
 import type { StreamSink } from '../llm/llm.client';
 import type { LlmResult, LlmToolRequest } from '../llm/llm.protocol';
-import type { AgentRunRepository } from '../agent/agent-run.repository';
+import type {
+  AgentRun,
+  AgentRunRepository,
+} from '../agent/agent-run.repository';
 import type {
   ExecutionPair,
   ToolExecutionInput,
@@ -227,10 +230,11 @@ export function stubAgentRuns() {
   const markParked = jest.fn(() => undefined);
   const markTerminal = jest.fn(() => undefined);
   const transitionRun = jest.fn<void, [string, string]>(() => undefined);
-  const findByRequest = jest.fn<{ id: string } | undefined, [string, string]>(
+  const findByRequest = jest.fn<AgentRun | undefined, [string, string]>(
     () => undefined,
   );
-  const get = jest.fn(() => undefined);
+  const get = jest.fn<AgentRun | undefined, [string]>(() => undefined);
+  const cancelRun = jest.fn<AgentRun | undefined, [string]>(() => undefined);
   const service = {
     createRun,
     recordStep,
@@ -239,6 +243,7 @@ export function stubAgentRuns() {
     transitionRun,
     findByRequest,
     get,
+    cancelRun,
   } as unknown as AgentRunRepository;
   return {
     service,
@@ -249,5 +254,6 @@ export function stubAgentRuns() {
     transitionRun,
     findByRequest,
     get,
+    cancelRun,
   };
 }

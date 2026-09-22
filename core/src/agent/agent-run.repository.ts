@@ -222,6 +222,41 @@ export class AgentRunRepository {
   }
 
   /**
+   * User-initiated cancellation. Terminal by design: a cancelled run
+   * never resumes planning, though already-parked approvals keep their
+   * M8-governed semantics (M8 decides execution, never the run row).
+   * Returns false when the run is already terminal.
+   */
+  cancelRun(runId: string): AgentRun | undefined {
+    const run = this.required(runId);
+    if (
+      run.state === 'completed' ||
+      run.state === 'failed' ||
+      run.state === 'cancelled' ||
+      run.state === 'budget_exhausted'
+    ) {
+      return undefined;
+    }
+    this.connection
+      .prepare(
+        `UPDATE agent_runs
+         SET state = 'cancelled',
+             termination_json = ?,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        JSON.stringify({
+          reason: 'cancelled',
+          toolSteps: run.toolCallCount,
+        } satisfies RunTermination),
+        nowIso(),
+        runId,
+      );
+    return this.required(runId);
+  }
+
+  /**
    * Observations for a run in step order: one per executed action,
    * each linked to its invocation with the authoritative result.
    * Rows without a durable execution (pending, parked, invalid) yield
