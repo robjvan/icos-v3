@@ -127,7 +127,7 @@ Development is active and the architecture is expected to change substantially a
 ICOS v3 is being developed as a sequence of increasingly capable experiments.
 
 | Milestone | Question |
-|:---:|---|
+| :---: | --- |
 | **M1** | *Can it talk?* |
 | **M2** | *Can it stream?* |
 | **M3** | *Can it remember what happened?* |
@@ -258,10 +258,10 @@ docker compose up --build
 Once the `icos-v3-core` service is healthy, open:
 
 ```text
-http://localhost:3000
+http://localhost:4200
 ```
 
-(Or `http://<host>:3000` when running on another machine on your network.)
+(Or `http://<host>:4200` when running on another machine on your network.)
 
 The development chat interface should be available there.
 
@@ -279,7 +279,7 @@ npm install
 npm run start
 ```
 
-Then open `http://localhost:3000` as above.
+Then open `http://localhost:4200` as above.
 
 ---
 
