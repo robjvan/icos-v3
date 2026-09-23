@@ -1,0 +1,42 @@
+<section class="tab-pane" aria-label="Client settings">
+  <div class="tab-pane-header">
+    <h1>Client settings</h1>
+    <span class="badge">frontend-only</span>
+  </div>
+  <dl class="settings">
+    <div>
+      <dt>Server URL</dt>
+      <dd class="mono">{{ serverUrl }}</dd>
+      <dd class="hint">
+        Compiled-in constant from <span class="mono">src/constants.ts</span>. Change the source and
+        rebuild to point elsewhere.
+      </dd>
+    </div>
+    <div>
+      <dt>Theme</dt>
+      <dd>
+        {{ themeLabel() }}
+        <div class="theme-row" role="radiogroup" aria-label="Theme">
+          <label>
+            <input
+              type="radio"
+              name="client-theme"
+              [checked]="theme() === 'dark'"
+              (change)="setTheme('dark')"
+            />
+            Dark
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="client-theme"
+              [checked]="theme() === 'light'"
+              (change)="setTheme('light')"
+            />
+            Light
+          </label>
+        </div>
+      </dd>
+    </div>
+  </dl>
+</section>

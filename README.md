@@ -183,6 +183,10 @@ play with the stack.
 ## Requirements
 
 - **Docker** with **Docker Compose** — the supported way to run the stack.
+  Give Docker **at least 4 GB of memory** (Docker Desktop → Settings →
+  Resources). The web-client image compiles the Angular app during
+  `docker compose build`, which needs ~1.5 GB; on a 2 GB Docker host the
+  build fails with esbuild `JS heap out of memory` errors.
 - **Node.js 24.13.0** and **npm 11.6.2** — only needed for local development
   outside Docker.
 - An OpenAI-compatible LLM endpoint.

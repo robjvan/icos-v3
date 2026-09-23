@@ -29,6 +29,7 @@ import { ConversationStore } from '../../services/conversation-store';
 export class ChatUiComponent implements OnInit, AfterViewChecked {
   readonly store = inject(ConversationStore);
   private readonly scrollHost = viewChild<ElementRef<HTMLElement>>('scrollHost');
+  private readonly composer = viewChild(Composer);
   private pinnedToBottom = true;
 
   ngOnInit(): void {
@@ -50,15 +51,25 @@ export class ChatUiComponent implements OnInit, AfterViewChecked {
   }
 
   openSession(id: string): void {
-    void this.store.openSession(id);
+    // Defer a tick: focus must run after change detection re-enables the
+    // composer and re-renders the transcript.
+    void this.store
+      .openSession(id)
+      .finally(() => setTimeout(() => this.focusComposer(), 0));
   }
 
   startNewSession(): void {
     this.store.newSession();
+    this.focusComposer();
   }
 
   sendMessage(text: string): void {
-    void this.store.sendMessage(text);
+    // Refocus when the turn (including trailing refreshes) completes so the
+    // next message starts from the keyboard. Busy-disable may drop focus
+    // mid-turn; the finally covers the ready state.
+    void this.store
+      .sendMessage(text)
+      .finally(() => setTimeout(() => this.focusComposer(), 0));
   }
 
   resolveApproval(event: { id: string; decision: 'approve' | 'reject' }): void {
@@ -75,5 +86,9 @@ export class ChatUiComponent implements OnInit, AfterViewChecked {
 
   sessionLabel(): string {
     return this.store.sessionId() ?? 'new session';
+  }
+
+  private focusComposer(): void {
+    this.composer()?.focusInput();
   }
 }

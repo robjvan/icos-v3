@@ -51,13 +51,16 @@ services:
         condition: service_healthy
 
     healthcheck:
-      # Confirm that the Angular application is serving its root document.
+      # Confirm that nginx is serving the SPA root document. (BusyBox wget:
+      # the nginx:alpine image has no node for the old check.)
       test:
         [
           "CMD",
-          "node",
-          "-e",
-          "require('http').get('http://localhost:4200/', (res) => res.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "http://localhost:4200/",
         ]
       interval: 10s
       timeout: 5s

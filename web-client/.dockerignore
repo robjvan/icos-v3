@@ -1,0 +1,18 @@
+# Keep host build artifacts out of the image. Without this, `COPY . .`
+# overwrites the Linux node_modules installed in the image with the host's
+# (e.g. macOS) binaries — notably the darwin esbuild binary, which crashes
+# `ng serve` with an onLoad/deadlock cascade on Linux (musl) containers.
+node_modules
+dist
+out-tsc
+.angular
+coverage
+
+# Local-only / editor noise
+.git
+.gitignore
+.vscode
+.vscode-test
+*.log
+npm-debug.log*
+.DS_Store

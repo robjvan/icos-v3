@@ -1,6 +1,11 @@
 # Web Client — Implementation Plan (`web-client/`)
 
-Status: Phase 1 complete (2026-09-22) — full test-client parity. Verified `tsc`, `eslint`, 40 unit tests, `ng build` (prod) green, live integration 9/10 REST checks + live LLM turn + browser E2E 6/6; committed on `dev`, no push.
+Status: Phase 3 complete (2026-09-23) — composer upload placeholder, search final
+pass, focus/ARIA hardening, contrast 24/24, AXE 12/12 clean, unit 34/98,
+E2E 20/20 vs live core, prod build 274.53 kB in budgets. Docker compose-up
+blocked (daemon down) — documented. Evidence:
+`.reference/plans/evidence/web-client-phase3.md`. Committed on `dev`, no push.
+(Phase 1–2 evidence retained below.)
 Scope: `web-client/` only. No changes to `core/` in this plan.
 Source-of-truth hierarchy: `.reference/web-client-blueprint.md` → this plan → code.
 Branch: `dev`. Commits per-phase, NO pushing.
@@ -21,7 +26,7 @@ Explicit non-goals (deferred to next major phase per blueprint):
 - [x] API base: fix `src/constants.ts` to `${SERVER_URL}/core/...` direct CORS. No `proxy.conf.json`, no `environments/` files in Phase 0–1.
 - [x] Phase 1 scope: full test-client parity (chat / sessions / approvals / clarifications); Phase 2+ adds real tabs; everything without a server backing it is a routed placeholder card.
 - [x] Skills tab reads the live read-only API; tools auto-approve toggles persist to `localStorage` as frontend-only prefs with a `server unimplemented` badge.
-- [x] No mockup: use `test-client.html` layout + blueprint floating-windows / both-themes description.
+- [x] No mockup: use `test-client.html` layout + both-themes description. The blueprint's "floating windows" line was dropped 2026-09-22 — the docked dashboard layout + card-style tabs ship as-is.
 - [x] PrimeNG allowed selectively; default is Tailwind + `@lucide/angular` (already installed). Install PrimeNG only when a Phase 2 widget proves the need.
 - [x] Health footer + health tab: static placeholders with a `TODO(core health endpoint)` in code. No HTTP `/health` exists — health today is only the `/health` slash-command text via the conversation API, and this plan adds no `core/` endpoints.
 
@@ -120,24 +125,79 @@ Status: complete (2026-09-22).
 
 ## 6. Phase 2 — Tabs (functional where server exists, placeholders elsewhere)
 
-Goal: blueprint tab bar with lazy routes; only skills/tools get live logic, everything else is an honest placeholder.
+Status: complete (2026-09-22). Rebuilt once after an accidental `web-client/` deletion; restored from git + re-applied the working-tree diff (16-tab nav spec, settings-modal content, routes spec).
 
-- [ ] `nav-tabs-component/` lazy routes: `chat | agents | tools | skills | files | memory | kb | sensors | mcp | models | cron | metrics | client-settings | server-settings | comms | identity`.
-- [ ] `skills-tab/` (functional read): `GET skills`, `discover?q=`, `active?sessionId=`, `:name` body view. No CRUD controls — API has no mutations; any CRUD affordance ships disabled with `filesystem is the writer` note. Auto-approve-style prefs (if any) are `localStorage`-only with `server unimplemented` badge.
-- [ ] `tools-tab/` (local prefs): tool list shown from observed `tool` stream events / static registry copy; per-tool auto-approve toggles persist to `localStorage` only, badged `frontend-only — server unimplemented`.
-- [ ] Placeholders (routed cards with `TODO(server milestone)`, no fake data): `agents-tab/` (M9/M14 persona), `models-tab/` (set-model, unimplemented), `cron-tab/` (M17), `files-tab/` (generated files, persistence unimplemented), `kb-tab/` incl. upload (M21), `sensors-tab/` (M18), `memory-tab/` (candidates list via `GET memory-candidates` read is allowed; ranking/consolidation M10–12 placeholder), `mcp-tab/` (M13), `comms-tab/` (SMS/Email/Discord, M16), `metrics-tab/` (token usage today/7d/30d/90d/custom + wakatime-style per-project — placeholder until server exposes usage), `client-settings-tab/` (`SERVER_URL`, theme), `server-settings-tab/` (read-only note), `identity-tab/` (SOUL.md/persona/system prompt, M14).
-- [ ] `settings-modal/` (client settings) + `about-modal/` content. `guards/` stays empty (blueprint auth: none).
-- [ ] Verify: `ng test`, lazy-route smoke (every tab loads, placeholders render badges), `tsc` + `eslint` clean — commit, NO push.
+### Routes + nav — done
+
+- [x] `app.routes.ts`: dashboard shell with 16 lazy `loadComponent` children — `'' (chat) | agents | tools | skills | files | memory | kb | sensors | mcp | models | cron | metrics | client-settings | server-settings | comms | identity`; `** → ''` fallback kept. Shell route drops `pathMatch: 'full'` so children match.
+- [x] `nav-tabs-component/`: all 16 tabs with lucide icons in a horizontally scrolling `tablist`, active highlighting per-tab (`exact: true`), settings shortcut, about-dialog button, theme toggle. About dialog renders `AboutModal` in a modal backdrop (`role=dialog`, `aria-modal`).
+- [x] `app.routes.spec.ts`: asserts all 16 child routes declare `loadComponent` + resolves the chat chunk. (Full per-route dynamic-import loop removed — importing all 16 chunks in one test exceeded the 5s vitest timeout.)
+
+### Functional tabs — done
+
+- [x] `skills-tab/` (live read): `GET skills` catalog + `discover?q=` + `:name` body view; blank-query guard; disabled-state placeholder when `enabled: false`; skipped-count note; `filesystem is the writer` badge; no CRUD controls (API has no mutations).
+- [x] `tools-tab/` (local prefs): static registry copy (`session.search` no-approval, `session.rename` approval-required — mirrors `core/src/tools/tool-registry.ts`); per-tool auto-approve checkboxes persist to `localStorage icos-tool-auto-approve`; `frontend-only · server unimplemented` badge + hint that chat approvals still follow server policy.
+- [x] `memory-tab/` (live read): `GET memory-candidates` ledger with optional session filter; kind/subject/predicate/object + confidence/importance/stability + extractor + provenance rendering; `ranking unimplemented (M10–M12)` badge.
+- [x] `client-settings-tab/`: compiled-in `SERVER_URL` display + theme radio group through `ThemeService`.
+- [x] `server-settings-tab/`: read-only placeholder (core exposes no settings endpoint; env-var note).
+
+### Placeholders — done (routed cards with `TODO(server milestone)`, no fake data)
+
+- [x] Shared `tab-placeholder/` (`title`, `description`, `milestone` inputs; `server unimplemented` badge): `agents-tab/` (M9/M14), `models-tab/` (model selection endpoint, unplanned), `cron-tab/` (M17), `files-tab/` (generated-file persistence, unplanned), `kb-tab/` (M21), `sensors-tab/` (M18), `mcp-tab/` (M13), `comms-tab/` (M16), `metrics-tab/` (usage/metrics endpoint, unplanned), `identity-tab/` (M14).
+- [x] `settings-modal/` (quick theme + server-URL display) + `about-modal/` content (capability summary + plan pointer). `guards/` stays empty (blueprint auth: none).
+
+### Verify — done
+
+- [x] `ng test`: 33 files / 87 tests green (new: 3 service specs, 5 functional-tab specs, 10 placeholder specs, placeholder badge spec, routes spec, expanded nav spec).
+- [x] Lazy-route smoke via browser (playwright-core + bundled Chromium, real `ng serve` + live core): 22/22 — app loads, nav lists 16 tabs, all 16 routes render their marker, skills tab lists 2 live skills, memory ledger renders, tools tab lists 2 tools with the frontend-only badge.
+- [x] `tsc` + `eslint` clean (one fix: unnecessary type assertion in tools spec), `ng build --configuration production` inside budgets — commit, NO push.
+
+### Chat theming fix (pre-Phase 3, 2026-09-22)
+
+- [x] Chat stylesheets ported from dark-only hex to theme vars: new `--bg-input`, `--bg-user-bubble`, `--bg-assistant-bubble`, `--border-default`, `--border-strong` tokens in `styles.css` (dark preserves the old look; light uses white inputs, sage user bubbles, white assistant cards); `chat-ui-component`, `message-list`, `session-sidebar`, `composer`, `approval-card`, `question-card` converted; dashboard `hr` uses `--border-default`. Assistant bubbles in light mode are white on lilac-mist — accepted, revisit if contrast feels off. Verified `tsc` + `eslint` clean, 33 files / 87 tests green, prod build in budgets.
 
 ## 7. Phase 3 — Polish, a11y, ship
 
-- [ ] Floating disconnected windows + gap layout per blueprint; system health footer bar (still static + `TODO`); file-upload placeholder input on composer (images/docs/audio-video, badged `server unimplemented`); session search/filters final pass.
-- [ ] i18n: `en` only; `fr/es/pa/zh` deferred. LTR only.
-- [ ] WCAG 2.1 AA: focus management (session switch, modal open/close, send/busy), contrast check on both themes, ARIA on tabs/cards/modals/composer. AXE pass required.
-- [ ] Responsive: ≤700px sidebar stacks (mirror `test-client.html:348-379` breakpoints).
-- [ ] E2E important flows: new → send → stream → switch session → approve → resume → answer clarification. (`ng e2e` harness is not scaffolded — pick one in this phase if time allows, else document manual script as evidence.)
-- [ ] Production: `ng build` inside budgets (`angular.json:33-44`); `docker compose up --build` → `core:3000` healthy → `web-client:4200` serves 200.
-- [ ] Evidence to `.reference/plans/evidence/` (unit + e2e + live run per repo ground rules) — commit, NO push.
+Status: complete (2026-09-23). Full evidence in
+`.reference/plans/evidence/web-client-phase3.md`.
+
+- [x] Docked dashboard layout + card-style tabs kept ("floating" dropped
+  2026-09-22); footer stays static + `TODO` (now with `contentinfo`
+  landmark, placeholder titles, passing status color); composer has a
+  file-upload placeholder (attach button, images/docs/audio/video accept,
+  local-only chips + `server unimplemented` badge, never uploaded);
+  session search has clear button, live result counts, sibling empty
+  states (out of the listbox per axe).
+- [x] i18n: `en` only (`lang="en"`); LTR only. Other locales deferred.
+- [x] WCAG 2.1 AA: focus returns to composer after open/new/send-complete
+  (deferred past CD so busy-disable can't swallow it); about dialog
+  focuses Close on open, Escape closes, focus returns to trigger;
+  computed contrast audit 24/24 pairs pass (deep-sage buttons, badge
+  text tokens, dark error red, light secondary fix); **AXE 12/12 pages
+  clean, 0 violations** (chat/skills/tools/memory/agents/client-settings
+  × dark/light; fixes: listbox children, `<main>` landmark, one `h1` per
+  route, plain-link nav, radiogroup nesting).
+- [x] Responsive: 390px verified — no horizontal overflow, sidebar stacks
+  (`flex-direction: column`); tab bar scrolls horizontally.
+- [x] E2E 20/20 (playwright-core Chromium, `ng serve` + live core):
+  new → send → stream → refocus → switch → search → clear → `/health` →
+  seeded approve → seeded answer → attach/remove → theme toggle →
+  dialog focus in/out → responsive. Parked-turn resume stays
+  unit-covered. Ephemeral `phase3-e2e-probe` rows only, all terminal.
+- [x] Production: `ng build` 274.53 kB initial (500 kB warn / 1 MB error);
+  `docker compose up -d` repaired and **verified 2026-09-23 after a RAM
+  bump to 4 GB**: root causes were (1) missing `.dockerignore` letting
+  host (darwin) `node_modules` overwrite the image's Linux binaries
+  (fixed, verified `linux-arm64` in image); (2) `ng serve` dev image OOMs
+  on small Docker hosts → multi-stage `Dockerfile` (node build +
+  `nginx:alpine` static serve, `try_files` SPA fallback). Verification
+  follow-ups: wget-based healthcheck (no node in nginx image), dual-stack
+  `listen [::]:4200`, README documents the ≥4 GB Docker memory need.
+  Final state: `core` healthy + `:3000` → 200, `web-client` healthy +
+  `:4200/` and `:4200/skills` → 200. No compose structural changes;
+  no `core/` changes.
+- [x] Evidence committed (this plan + `evidence/web-client-phase3.md`) —
+  commit, NO push.
 
 ## 8. Execution order
 

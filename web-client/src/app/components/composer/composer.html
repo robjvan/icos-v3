@@ -1,17 +1,59 @@
 <form class="composer" [formGroup]="form" (ngSubmit)="onSubmit()" aria-label="Message composer">
-  <textarea
-    id="composer-input"
-    formControlName="message"
-    placeholder="Talk to ICOS..."
-    autocomplete="off"
-    autofocus
-    rows="2"
-    [disabled]="busy()"
-    (keydown)="onKeydown($event)"
-    aria-label="Message"
-  ></textarea>
-  <button id="composer-send" type="submit" [disabled]="busy()">
-    <svg lucideSend [size]="16" aria-hidden="true"></svg>
-    {{ sendLabel() }}
-  </button>
+  <div class="composer-row">
+    <button
+      id="composer-attach"
+      type="button"
+      class="attach-btn"
+      (click)="openFilePicker()"
+      aria-label="Attach files (local-only placeholder, not uploaded)"
+      title="Attach files (local-only placeholder, not uploaded)"
+    >
+      <svg lucidePaperclip [size]="16" aria-hidden="true"></svg>
+    </button>
+    <textarea
+      #textarea
+      id="composer-input"
+      formControlName="message"
+      placeholder="Talk to ICOS..."
+      autocomplete="off"
+      autofocus
+      rows="2"
+      [disabled]="busy()"
+      (keydown)="onKeydown($event)"
+      aria-label="Message"
+    ></textarea>
+    <button id="composer-send" type="submit" [disabled]="busy()">
+      <svg lucideSend [size]="16" aria-hidden="true"></svg>
+      {{ sendLabel() }}
+    </button>
+  </div>
+  <input
+    #fileInput
+    type="file"
+    class="visually-hidden"
+    multiple
+    accept="image/*,.pdf,.txt,.md,audio/*,video/*"
+    (change)="onFilesSelected($event)"
+    aria-label="Choose files to attach"
+    tabindex="-1"
+  />
+  @if (attachments().length > 0) {
+    <div class="attachments" aria-label="Selected attachments (not uploaded)">
+      <span class="badge">local-only · server unimplemented</span>
+      <ul aria-label="Attached files">
+        @for (name of attachments(); track $index; let i = $index) {
+          <li>
+            <span>{{ name }}</span>
+            <button
+              type="button"
+              (click)="removeAttachment(i)"
+              [attr.aria-label]="'Remove attachment ' + name"
+            >
+              <svg lucideX [size]="14" aria-hidden="true"></svg>
+            </button>
+          </li>
+        }
+      </ul>
+    </div>
+  }
 </form>

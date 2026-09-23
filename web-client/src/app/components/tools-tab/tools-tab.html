@@ -1,0 +1,32 @@
+<section class="tab-pane" aria-label="Tools">
+  <div class="tab-pane-header">
+    <h1>Tools</h1>
+    <span class="badge">frontend-only · server unimplemented</span>
+  </div>
+  <p class="hint">
+    Auto-approve toggles persist to this browser only. Core has no tool-list or auto-approve
+    endpoint yet, so approvals in chat still follow server policy ({{ autoApprovedCount() }} of
+    {{ tools.length }} marked auto-approve locally).
+  </p>
+  <ul class="tool-list" aria-label="Known tools">
+    @for (tool of tools; track tool.name) {
+      <li class="tool">
+        <div class="tool-header">
+          <span class="name mono">{{ tool.name }}</span>
+          <span class="policy">{{ approvalLabel(tool) }}</span>
+        </div>
+        <p class="description">{{ tool.description }}</p>
+        <label class="toggle">
+          <input
+            type="checkbox"
+            [checked]="isChecked(tool)"
+            #toggleBox
+            (change)="toggle(tool, toggleBox.checked)"
+            [attr.aria-label]="'Auto-approve ' + tool.name"
+          />
+          Auto-approve (frontend-only)
+        </label>
+      </li>
+    }
+  </ul>
+</section>
