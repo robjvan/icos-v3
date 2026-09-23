@@ -185,9 +185,7 @@ export class ToolExecutionRepository {
           const state = !validation.ok
             ? 'invalid'
             : request
-              ? request.name === 'session.rename'
-                ? 'awaiting_approval'
-                : 'validated'
+              ? 'validated'
               : 'closed';
           const final: FinalOutcome =
             state === 'closed' && input.proposal.kind === 'text'
@@ -199,35 +197,10 @@ export class ToolExecutionRepository {
             input.proposal.toolCalls.length === 1
               ? randomUUID()
               : null;
-          let approvalId: string | null = null;
-          if (
-            state === 'awaiting_approval' &&
-            request?.name === 'session.rename'
-          ) {
-            approvalId = randomUUID();
-            const now = nowIso();
-            this.database.connection
-              .prepare(
-                `INSERT INTO approvals
-                  (id, session_id, action, description, status,
-                   created_at, updated_at, expires_at)
-                 VALUES (?, ?, 'session.rename', ?, 'pending', ?, ?, NULL)`,
-              )
-              .run(
-                approvalId,
-                input.sessionId,
-                `Rename session to "${request.args.title}"`,
-                now,
-                now,
-              );
-            this.database.connection
-              .prepare(
-                `INSERT INTO approval_events
-                   (approval_id, session_id, event, created_at)
-                 VALUES (?, ?, 'created', ?)`,
-              )
-              .run(approvalId, input.sessionId, now);
-          }
+          const approvalId: string | null = null;
+          // No tool currently parks for approval (rename was
+          // de-escalated). Pre-flip parked rows keep their stored
+          // approval ids and resume paths; nothing new mints them.
           this.database.connection
             .prepare(
               `INSERT INTO tool_requests
@@ -368,6 +341,50 @@ export class ToolExecutionRepository {
           const result = this.database.connection
             .prepare(
               "UPDATE tool_requests SET state = 'executing', execution_token = ? WHERE request_id = ? AND state = 'awaiting_approval' AND execution_token IS NULL",
+            )
+            .run(token, requestId);
+          return result.changes === 1 ? token : null;
+        })
+        .immediate(),
+    );
+  }
+
+  /**
+   * Claim a validated (approval-free) rename for inline execution.
+   * Mirrors claimRename but starts from 'validated': revalidates
+   * inside the claim transaction and invalidates on disagreement.
+   */
+  claimRenameInline(
+    requestId: string,
+    revalidate: (input: ToolExecutionInput) => ValidationOutcome,
+  ): string | null {
+    return this.access(() =>
+      this.database.connection
+        .transaction(() => {
+          const record = this.required(requestId);
+          if (record.state !== 'validated') return null;
+          this.requireSession(record.sessionId);
+          const validation = revalidate(record.input);
+          if (
+            !validation.ok ||
+            !('request' in validation) ||
+            validation.request.name !== 'session.rename' ||
+            !isDeepStrictEqual(validation, record.validation)
+          ) {
+            const failure: ValidationOutcome = validation.ok
+              ? { ok: false, failure: { code: 'unpermitted_tool' } }
+              : validation;
+            this.database.connection
+              .prepare(
+                "UPDATE tool_requests SET state = 'invalid', validation_json = ? WHERE request_id = ? AND state = 'validated'",
+              )
+              .run(JSON.stringify(failure), requestId);
+            return null;
+          }
+          const token = randomUUID();
+          const result = this.database.connection
+            .prepare(
+              "UPDATE tool_requests SET state = 'executing', execution_token = ? WHERE request_id = ? AND state = 'validated' AND execution_token IS NULL",
             )
             .run(token, requestId);
           return result.changes === 1 ? token : null;

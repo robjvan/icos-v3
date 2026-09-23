@@ -367,51 +367,90 @@ describe('ToolExecutionService SQLite', () => {
     return proposal;
   }
 
-  it('parks rename with a bound pending approval and ignores generic approvals', async () => {
-    const first = open();
-    await first.sessions.createSession('s1');
+  /**
+   * Pre-flip parked rename row: what register() used to mint for every
+   * rename. Seeds the ledger + approval tables directly so the resume
+   * path (kept for these legacy rows) stays covered after the
+   * approval-free flip. Validation JSON is computed from the live
+   * registry so resume-time revalidation agrees by construction.
+   */
+  async function seedParkedRename(
+    opened: ReturnType<typeof open>,
+    requestId = 'request-1',
+    approvalId = 'appr-legacy',
+  ): Promise<{ requestId: string; approvalId: string }> {
+    const { database, sessions, registry } = opened;
+    await sessions.createSession('s1');
     const proposal = renameInput();
-    const result = await first.service.consume(proposal);
-    expect(result).toMatchObject({
-      state: 'awaiting_approval',
-      execution: null,
-      final: { state: 'not_required' },
-    });
-    expect(result.approvalId).toEqual(expect.any(String));
-    expect(result.invocationId).not.toBe('model-id');
-    const bound = await first.approvalService.get(result.approvalId!);
-    expect(bound).toMatchObject({
-      sessionId: 's1',
-      action: 'session.rename',
-      status: 'pending',
-    });
-    expect(bound.description).toContain('new title');
-    expect(bound.events.map((event) => event.event)).toEqual(['created']);
-    first.database.connection
+    proposal.requestId = requestId;
+    const validation = registry.validate(
+      { name: 'session.rename', version: 1, args: { title: 'new title' } },
+      { sessionId: 's1', allowedTools: proposal.allowedTools },
+    );
+    if (!validation.ok || !('request' in validation))
+      throw new Error('fixture');
+    const now = new Date().toISOString();
+    database.connection
       .prepare(
-        "INSERT INTO approvals (id, session_id, action, status, created_at, updated_at) VALUES ('generic', 's1', 'session.rename', 'approved', '', '')",
+        `INSERT INTO approvals
+         (id, session_id, action, description, status, created_at, updated_at, expires_at)
+       VALUES (?, 's1', 'session.rename', ?, 'pending', ?, ?, NULL)`,
       )
-      .run();
-    first.database.onModuleDestroy();
-    const second = open();
-    expect(await second.service.consume(proposal)).toMatchObject({
-      state: 'awaiting_approval',
-      approvalId: result.approvalId,
+      .run(approvalId, 'Rename session to "new title"', now, now);
+    database.connection
+      .prepare(
+        `INSERT INTO approval_events (approval_id, session_id, event, created_at)
+       VALUES (?, 's1', 'created', ?)`,
+      )
+      .run(approvalId, now);
+    database.connection
+      .prepare(
+        `INSERT INTO tool_requests
+         (request_id, session_id, input_json, invocation_id, approval_id,
+          state, validation_json, execution_token, ownership,
+          final_state, final_json)
+       VALUES (?, 's1', ?, 'inv-legacy-1', ?, 'awaiting_approval', ?, NULL,
+               'unconfirmed', 'not_required', ?)`,
+      )
+      .run(
+        requestId,
+        JSON.stringify(proposal),
+        approvalId,
+        JSON.stringify(validation),
+        JSON.stringify({ state: 'not_required' }),
+      );
+    return { requestId, approvalId };
+  }
+
+  it('executes rename inline without approval and exactly once', async () => {
+    const { service, sessions, database } = open();
+    await sessions.createSession('s1');
+    const done = await service.consume(renameInput());
+    expect(done).toMatchObject({
+      state: 'succeeded',
+      approvalId: null,
+      execution: {
+        ok: true,
+        renamed: { sessionId: 's1', title: 'new title' },
+      },
     });
-    expect((await second.sessions.getSession('s1'))?.title).toBeUndefined();
-    expect(final).not.toHaveBeenCalled();
+    expect((await sessions.getSession('s1'))?.title).toBe('new title');
+    expect(final).toHaveBeenCalledTimes(1);
+    // No approval row minted for the approval-free path.
+    expect(
+      database.connection.prepare('SELECT COUNT(*) AS n FROM approvals').get(),
+    ).toMatchObject({ n: 0 });
+    // Second consume answers from the durable record, no re-execution.
+    expect(await service.consume(renameInput())).toEqual(done);
+    expect((await sessions.getSession('s1'))?.title).toBe('new title');
+    expect(final).toHaveBeenCalledTimes(1);
   });
 
-  it('executes an approved rename exactly once and consumes the durable result', async () => {
-    const { service, sessions, ledger, approvalService } = open();
-    await sessions.createSession('s1');
-    await sessions.appendMessage('s1', {
-      role: 'user',
-      content: 'teal evidence',
-    });
-    const parked = await service.consume(renameInput());
-    expect(parked.state).toBe('awaiting_approval');
-    await approvalService.approve(parked.approvalId!, 's1');
+  it('still resumes pre-flip parked renames after approval, exactly once', async () => {
+    const opened = open();
+    const { service, sessions, ledger, approvalService } = opened;
+    const parked = await seedParkedRename(opened);
+    await approvalService.approve(parked.approvalId, 's1');
     const done = await service.resume(parked.requestId, 's1');
     expect(done).toMatchObject({
       state: 'succeeded',
@@ -425,7 +464,6 @@ describe('ToolExecutionService SQLite', () => {
       },
     });
     expect((await sessions.getSession('s1'))?.title).toBe('new title');
-    expect(await sessions.getMessages('s1')).toHaveLength(1);
     expect(await service.resume(parked.requestId, 's1')).toEqual(done);
     expect(await service.consume(renameInput())).toEqual(done);
     const request = final.mock.calls[0][0];
@@ -446,11 +484,11 @@ describe('ToolExecutionService SQLite', () => {
     expect(final).toHaveBeenCalledTimes(1);
   });
 
-  it('resumes from consume after approval without a separate resume call', async () => {
-    const { service, sessions, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
-    await approvalService.approve(parked.approvalId!, 's1');
+  it('resumes a legacy parked rename from consume after approval', async () => {
+    const opened = open();
+    const { service, sessions } = opened;
+    const parked = await seedParkedRename(opened);
+    await opened.approvalService.approve(parked.approvalId, 's1');
     const done = await service.consume(renameInput());
     expect(done.state).toBe('succeeded');
     expect((await sessions.getSession('s1'))?.title).toBe('new title');
@@ -461,10 +499,10 @@ describe('ToolExecutionService SQLite', () => {
     ['rejected', 'reject'],
     ['cancelled', 'cancel'],
   ] as const)('mirrors %s without executing', async (state, method) => {
-    const { service, sessions, ledger, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
-    await approvalService[method](parked.approvalId!, 's1');
+    const opened = open();
+    const { service, sessions, ledger } = opened;
+    const parked = await seedParkedRename(opened);
+    await opened.approvalService[method](parked.approvalId, 's1');
     const mirrored = await service.resume(parked.requestId, 's1');
     expect(mirrored).toMatchObject({
       state,
@@ -478,13 +516,13 @@ describe('ToolExecutionService SQLite', () => {
   });
 
   it('mirrors expiry without executing', async () => {
-    const { service, sessions, database, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
+    const opened = open();
+    const { service, sessions, database } = opened;
+    const parked = await seedParkedRename(opened);
     database.connection
       .prepare('UPDATE approvals SET expires_at = ? WHERE id = ?')
-      .run('2000-01-01T00:00:00.000Z', parked.approvalId!);
-    expect((await approvalService.get(parked.approvalId!)).status).toBe(
+      .run('2000-01-01T00:00:00.000Z', parked.approvalId);
+    expect((await opened.approvalService.get(parked.approvalId)).status).toBe(
       'expired',
     );
     const mirrored = await service.resume(parked.requestId, 's1');
@@ -498,15 +536,15 @@ describe('ToolExecutionService SQLite', () => {
   });
 
   it('denies resume from a forked session without touching the original', async () => {
-    const { service, sessions, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
+    const opened = open();
+    const { service, sessions } = opened;
+    const parked = await seedParkedRename(opened);
     const forkId = 'fork-1';
     await sessions.forkSession('s1', forkId);
     await expect(service.resume(parked.requestId, forkId)).rejects.toThrow(
       'invalid_session',
     );
-    await approvalService.approve(parked.approvalId!, 's1');
+    await opened.approvalService.approve(parked.approvalId, 's1');
     await expect(service.resume(parked.requestId, forkId)).rejects.toThrow(
       'invalid_session',
     );
@@ -516,11 +554,10 @@ describe('ToolExecutionService SQLite', () => {
     expect((await sessions.getSession('s1'))?.title).toBe('new title');
   });
 
-  it('keeps an approved rename executable across restart, exactly once', async () => {
+  it('keeps a legacy approved rename executable across restart, exactly once', async () => {
     const first = open();
-    await first.sessions.createSession('s1');
-    const parked = await first.service.consume(renameInput());
-    await first.approvalService.approve(parked.approvalId!, 's1');
+    const parked = await seedParkedRename(first);
+    await first.approvalService.approve(parked.approvalId, 's1');
     first.database.onModuleDestroy();
     const second = open();
     const done = await second.service.resume(parked.requestId, 's1');
@@ -536,9 +573,8 @@ describe('ToolExecutionService SQLite', () => {
   it('lets concurrent resumes converge on one rename', async () => {
     const first = open();
     const second = open();
-    await first.sessions.createSession('s1');
-    const parked = await first.service.consume(renameInput());
-    await first.approvalService.approve(parked.approvalId!, 's1');
+    const parked = await seedParkedRename(first);
+    await first.approvalService.approve(parked.approvalId, 's1');
     const [one, two] = await Promise.all([
       first.service.resume(parked.requestId, 's1'),
       second.service.resume(parked.requestId, 's1'),
@@ -551,10 +587,10 @@ describe('ToolExecutionService SQLite', () => {
   });
 
   it('invalidates an approved rename when revalidation no longer agrees', async () => {
-    const { service, sessions, registry, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
-    await approvalService.approve(parked.approvalId!, 's1');
+    const opened = open();
+    const { service, sessions, registry } = opened;
+    const parked = await seedParkedRename(opened);
+    await opened.approvalService.approve(parked.approvalId, 's1');
     jest.spyOn(registry, 'validate').mockReturnValue({
       ok: false,
       failure: { code: 'unpermitted_tool', message: 'secret' },
@@ -570,10 +606,10 @@ describe('ToolExecutionService SQLite', () => {
   });
 
   it('keeps a rename result across failed final with no re-execution', async () => {
-    const { service, sessions, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
-    await approvalService.approve(parked.approvalId!, 's1');
+    const opened = open();
+    const { service, sessions } = opened;
+    const parked = await seedParkedRename(opened);
+    await opened.approvalService.approve(parked.approvalId, 's1');
     final.mockRejectedValue(new Error('secret credential'));
     const result = await service.resume(parked.requestId, 's1');
     expect(result).toMatchObject({
@@ -588,10 +624,10 @@ describe('ToolExecutionService SQLite', () => {
   });
 
   it('resolves an orphaned rename claim to unknown truthfully, then completes', async () => {
-    const { service, sessions, ledger, approvalService } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
-    await approvalService.approve(parked.approvalId!, 's1');
+    const opened = open();
+    const { service, ledger } = opened;
+    const parked = await seedParkedRename(opened);
+    await opened.approvalService.approve(parked.approvalId, 's1');
     const validation = {
       ok: true as const,
       request: {
@@ -622,9 +658,9 @@ describe('ToolExecutionService SQLite', () => {
   });
 
   it('rejects rebinding approval identity at the SQLite boundary', async () => {
-    const { service, sessions, database } = open();
-    await sessions.createSession('s1');
-    const parked = await service.consume(renameInput());
+    const opened = open();
+    const { database } = opened;
+    const parked = await seedParkedRename(opened);
     expect(() =>
       database.connection
         .prepare(

@@ -334,6 +334,12 @@ CREATE TABLE IF NOT EXISTS claims (
     object TEXT NOT NULL,
     identity_key TEXT NOT NULL,
 
+    -- M10c: normalized subject/predicate for conflict lookup
+    -- (same subject+predicate, different object). Populated by the
+    -- repository with the same normalization as identity_key.
+    subject_norm TEXT NOT NULL DEFAULT '',
+    predicate_norm TEXT NOT NULL DEFAULT '',
+
     category TEXT NOT NULL
         CHECK (category IN ('fact', 'preference', 'relationship', 'procedure')),
     status TEXT NOT NULL
@@ -375,6 +381,30 @@ ON claims(status);
 
 CREATE INDEX IF NOT EXISTS idx_claims_category
 ON claims(category);
+
+CREATE INDEX IF NOT EXISTS idx_claims_subject_predicate
+ON claims(subject_norm, predicate_norm);
+
+/**
+ * M10c promotion journal. Exactly-once machinery for candidate →
+ * belief promotion: one row per proposed candidate, approval id as
+ * idempotency key, crash-recoverable states.
+ */
+CREATE TABLE IF NOT EXISTS promotion_journal (
+    id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE,
+    operation TEXT NOT NULL CHECK (operation IN ('NEW', 'REINFORCE', 'CONTRADICT')),
+    state TEXT NOT NULL
+        CHECK (state IN ('proposed', 'promoting', 'committed', 'denied', 'failed')),
+    approval_id TEXT,
+    claim_id TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_promotion_journal_state
+ON promotion_journal(state);
 `;
 
 const SCHEMAS: Record<
@@ -403,7 +433,7 @@ const SCHEMAS: Record<
   },
   memories: {
     sql: MEMORIES_SCHEMA_SQL,
-    tables: ['memory_candidates', 'claims'],
+    tables: ['memory_candidates', 'claims', 'promotion_journal'],
     triggers: [],
   },
 };
@@ -464,6 +494,20 @@ function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
       'source_role',
       `TEXT NOT NULL DEFAULT 'unknown'`,
     );
+    // M10c: live claim files predate conflict-lookup columns.
+    addColumnIfMissing(
+      db,
+      'claims',
+      'subject_norm',
+      `TEXT NOT NULL DEFAULT ''`,
+    );
+    addColumnIfMissing(
+      db,
+      'claims',
+      'predicate_norm',
+      `TEXT NOT NULL DEFAULT ''`,
+    );
+    backfillClaimNorms(db);
   }
 }
 
@@ -556,6 +600,19 @@ function ensureToolRequestsTrigger(db: Database.Database): void {
   if (trigger && trigger.sql.includes('approval_id')) return;
   db.exec(`DROP TRIGGER IF EXISTS tool_requests_identity_immutable;`);
   db.exec(TOOL_REQUESTS_IMMUTABLE_TRIGGER_SQL);
+}
+/**
+ * M10c backfill for claim rows predating the norm columns. SQL-level
+ * approximation (case/whitespace/underscores) — close enough for
+ * conflict lookup on legacy rows; every row written by the
+ * repository carries exact norms. Only touches rows never populated.
+ */
+function backfillClaimNorms(db: Database.Database): void {
+  db.exec(`
+    UPDATE claims
+       SET subject_norm = lower(trim(replace(subject, '_', ' '))),
+           predicate_norm = lower(trim(replace(predicate, '_', ' ')))
+     WHERE subject_norm = '' OR predicate_norm = '';`);
 }
 
 function addColumnIfMissing(

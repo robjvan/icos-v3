@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { MEMORY_CANDIDATE_KINDS } from './memory/memory-candidate';
 
 export const CORE_CONFIG = 'CORE_CONFIG';
 
@@ -30,6 +31,16 @@ export interface CoreConfig {
   memoryLlmHeaders?: Record<string, string>;
   memoryUserAgent?: string;
   memoryLlmTimeoutMs: number;
+  /**
+   * M10c promotion authority. false (default) = every promotion needs
+   * a human approval; true admits NEW claims of the configured kinds
+   * without approval. REINFORCE/CONTRADICT always require approval.
+   */
+  memoryPromotionAuto: boolean;
+  /** Candidate kinds eligible for automatic promotion (default: none). */
+  memoryPromotionAutoKinds: string[];
+  /** RuVector claim-index store path (M10d semantic surface). */
+  vectorDbPath: string;
   /** Filesystem skill catalog root (M7). One `<name>/SKILL.md` per skill. */
   skillsDirPath: string;
   /** Kill-switch: false restores pre-M7 behavior exactly. */
@@ -116,6 +127,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
       60000,
       'MEMORY_LLM_TIMEOUT_MS',
     ),
+    memoryPromotionAuto: parseBoolean(env.MEMORY_PROMOTION_AUTO, false),
+    memoryPromotionAutoKinds: parseKindList(env.MEMORY_PROMOTION_AUTO_KINDS),
+    vectorDbPath: resolvePath(
+      env.VECTOR_DB_PATH,
+      '~/.icos/data/claims-vector.db',
+    ),
     skillsDirPath: resolvePath(env.SKILLS_DIR_PATH, '~/.icos/skills'),
     skillsEnabled: parseBoolean(env.SKILLS_ENABLED, true),
     skillsMaxBodyChars: parsePositiveInt(
@@ -159,6 +176,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreConfig {
       'AGENT_MAX_TURN_DURATION_MS',
     ),
   };
+}
+
+/**
+ * Comma-separated candidate-kind allowlist, e.g. "fact,observation".
+ * Empty/unset admits nothing. Unknown kinds throw — a typo must not
+ * silently widen automatic promotion.
+ */
+function parseKindList(raw: string | undefined): string[] {
+  if (raw === undefined || raw.trim() === '') return [];
+  const kinds = raw
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part !== '');
+  const known = new Set(MEMORY_CANDIDATE_KINDS as readonly string[]);
+  for (const kind of kinds) {
+    if (!known.has(kind)) {
+      throw new Error(
+        `MEMORY_PROMOTION_AUTO_KINDS contains unknown kind "${kind}"`,
+      );
+    }
+  }
+  return [...new Set(kinds)];
 }
 
 function parseBoolean(raw: string | undefined, fallback: boolean): boolean {

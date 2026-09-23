@@ -24,6 +24,7 @@ import type {
 import { EXTRACTION_VERSION } from '../memory/extraction.prompt';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { PromotionService } from '../memory/promotion.service';
 import { SkillService } from '../skills/skill.service';
 import type { ResolvedTurnSkills } from '../skills/skill.service';
 import type { LoadedSkill, TurnSkillReport } from '../skills/skill.types';
@@ -197,6 +198,7 @@ export class ConversationService {
     private readonly registry: ToolRegistry,
     private readonly agentRuns: AgentRunRepository,
     @Inject(CORE_CONFIG) private readonly config: CoreConfig,
+    private readonly promotion: PromotionService,
   ) {}
 
   async converse(message: string, sessionId?: string): Promise<TurnOutcome> {
@@ -1981,20 +1983,26 @@ export class ConversationService {
       })
       .then((validated) => {
         if (validated.length === 0) return;
-        return this.candidates.saveCandidates(
-          validated.map((candidate) => ({
-            ...candidate,
-            source: {
-              sessionId: input.sessionId,
-              messageId: input.userMessageId,
-              // Old extractor versions predate the stamp; absence reads
-              // 'unknown', never invented.
-              role: candidate.sourceRole ?? 'unknown',
-            },
-            extractorModel: this.config.memoryLlmModel,
-            extractorVersion: EXTRACTION_VERSION,
-          })),
-        );
+        return this.candidates
+          .saveCandidates(
+            validated.map((candidate) => ({
+              ...candidate,
+              source: {
+                sessionId: input.sessionId,
+                messageId: input.userMessageId,
+                // Old extractor versions predate the stamp; absence reads
+                // 'unknown', never invented.
+                role: candidate.sourceRole ?? 'unknown',
+              },
+              extractorModel: this.config.memoryLlmModel,
+              extractorVersion: EXTRACTION_VERSION,
+            })),
+          )
+          .then((saved) => {
+            // Proposal is fire-and-forget inside fire-and-forget:
+            // execution happens on the explicit sweep path, never here.
+            if (saved) void this.promotion.proposeCandidates(saved);
+          });
       })
       .catch((err: unknown) => {
         this.logger.warn(

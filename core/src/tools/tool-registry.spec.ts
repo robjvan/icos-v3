@@ -60,7 +60,7 @@ describe('ToolRegistry', () => {
       expect(descriptor.description.length).toBeGreaterThan(0);
     }
     expect(registry.lookup('session.search')?.approval).toBe('none');
-    expect(registry.lookup('session.rename')?.approval).toBe('required');
+    expect(registry.lookup('session.rename')?.approval).toBe('none');
   });
 
   it('freezes descriptor metadata against mutation', () => {

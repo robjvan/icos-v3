@@ -11,6 +11,7 @@ import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import type { MemoryExtractionInput } from '../memory/memory-candidate-extractor';
 import type { ValidatedCandidate } from '../memory/memory-candidate';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { PromotionService } from '../memory/promotion.service';
 import { SKILL_FILE } from '../skills/skill-loader';
 import { SkillService } from '../skills/skill.service';
 import { ToolRegistry } from '../tools/tool-registry';
@@ -50,6 +51,9 @@ function testConfig(
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'test-model',
     memoryLlmTimeoutMs: 1000,
+    memoryPromotionAuto: false,
+    memoryPromotionAutoKinds: [],
+    vectorDbPath: '/tmp/icos-test-claims-vector.db',
     skillsDirPath,
     skillsEnabled: true,
     skillsMaxBodyChars: 12000,
@@ -125,6 +129,9 @@ async function setup(
     new ToolRegistry(),
     stubAgentRuns().service,
     config,
+    {
+      proposeCandidates: () => Promise.resolve([]),
+    } as unknown as PromotionService,
   );
   return {
     service,

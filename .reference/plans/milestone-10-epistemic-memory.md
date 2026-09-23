@@ -224,7 +224,9 @@ contradiction against it (M10e).
 
 ---
 
-# [ ] M10c — Promotion Pipeline
+# [x] M10c — Promotion Pipeline (complete 2026-09-23)
+
+Evidence: `.reference/plans/evidence/milestone-10c-evidence-promotion.md`.
 
 The centerpiece: the step that turns candidates into beliefs, with
 hybrid authority (decided: human approval by default, automatic
@@ -285,7 +287,9 @@ proposed → approved/denied → promoting → committed
 
 ---
 
-# [ ] M10d — Claim Storage and Read API
+# [x] M10d — Claim Storage and Read API (complete 2026-09-23)
+
+Evidence: `.reference/plans/evidence/milestone-10d-evidence-storage-api.md`.
 
 Persist claims behind a `ClaimRepository` boundary (SQLite first
 unless M10a lands RuVector). Read paths for inspection and

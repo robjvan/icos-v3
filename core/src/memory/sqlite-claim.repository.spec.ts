@@ -24,6 +24,9 @@ function testConfig(memoryDbPath: string, dir: string): CoreConfig {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'mem',
     memoryLlmTimeoutMs: 1000,
+    memoryPromotionAuto: false,
+    memoryPromotionAutoKinds: [],
+    vectorDbPath: join(dir, 'claims-vector-test.db'),
     skillsDirPath: join(dir, 'skills-unused'),
     skillsEnabled: true,
     skillsMaxBodyChars: 12000,
@@ -189,6 +192,26 @@ describe('SqliteClaimRepository', () => {
     expect(await repository.setStatus('missing', 'active')).toBeNull();
   });
 
+  it('finds conflicts by subject+predicate regardless of object', async () => {
+    const repository = openRepo();
+    const saved = await repository.createClaim(claim());
+    await repository.createClaim(claim('Rust'));
+
+    const conflicts = await repository.findBySubjectPredicate(
+      'USER',
+      'prefers',
+    );
+    expect(conflicts.map((c) => c.object).sort()).toEqual([
+      'Rust',
+      'TypeScript',
+    ]);
+    expect(
+      await repository.findBySubjectPredicate('user', 'likes'),
+    ).toHaveLength(0);
+    expect(conflicts[0]?.id).toBeDefined();
+    expect(saved.id).toBeDefined();
+  });
+
   it('lists newest-first, optionally filtered by status', async () => {
     const repository = openRepo();
     const a = await repository.createClaim(claim('A'));
@@ -201,6 +224,31 @@ describe('SqliteClaimRepository', () => {
     ]);
     expect(
       (await repository.listClaims({ status: 'active' })).map((c) => c.object),
+    ).toEqual(['A']);
+  });
+
+  it('filters by category and origin', async () => {
+    const repository = openRepo();
+    await repository.createClaim(claim('A'));
+    await repository.createClaim({
+      ...claim('B'),
+      subject: 'system',
+      predicate: 'runs_on',
+      category: 'fact',
+      origin: 'agent',
+      evidence: [{ candidateId: 'cand-9', role: 'assistant' }],
+    });
+
+    expect(
+      (await repository.listClaims({ category: 'fact' })).map((c) => c.object),
+    ).toEqual(['B']);
+    expect(
+      (await repository.listClaims({ origin: 'agent' })).map((c) => c.object),
+    ).toEqual(['B']);
+    expect(
+      (
+        await repository.listClaims({ category: 'preference', origin: 'user' })
+      ).map((c) => c.object),
     ).toEqual(['A']);
   });
 

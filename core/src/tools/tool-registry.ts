@@ -139,7 +139,10 @@ const DESCRIPTORS: readonly ToolDescriptor[] = Object.freeze([
     name: 'session.rename',
     version: 1,
     description: 'Rename the current session.',
-    approval: 'required',
+    // Deliberately approval-free (2026-09-23): retitling the user's own
+    // session is benign and reversible. Granular per-tool approval
+    // toggles remain future UI work; if that lands, revisit this.
+    approval: 'none',
     argsSchema: RENAME_SCHEMA,
   }),
 ]);

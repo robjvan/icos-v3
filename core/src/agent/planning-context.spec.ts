@@ -13,9 +13,7 @@ describe('buildPlanningBlock', () => {
     });
     expect(block).toContain('Goal for this turn: find teal');
     expect(block).toContain('- session.search (runs immediately)');
-    expect(block).toContain(
-      '- session.rename (pauses for human approval and ends your turn)',
-    );
+    expect(block).toContain('- session.rename (runs immediately)');
     expect(block).toContain('at most 5 tool steps across 5 proposal rounds');
   });
 

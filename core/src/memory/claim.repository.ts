@@ -1,4 +1,11 @@
-import type { Claim, ClaimEvidence, ClaimStatus, NewClaim } from './claim';
+import type {
+  Claim,
+  ClaimCategory,
+  ClaimEvidence,
+  ClaimOrigin,
+  ClaimStatus,
+  NewClaim,
+} from './claim';
 import type { Triple } from './claim-identity';
 
 /**
@@ -14,6 +21,16 @@ export abstract class ClaimRepository {
 
   /** Find by normalized triple identity (dedup / convergence). */
   abstract findByTriple(triple: Triple): Promise<Claim | null>;
+
+  /**
+   * Conflict lookup: claims sharing normalized subject+predicate
+   * regardless of object, newest-touch first. The CONTRADICT
+   * derivation works from this set.
+   */
+  abstract findBySubjectPredicate(
+    subject: string,
+    predicate: string,
+  ): Promise<Claim[]>;
 
   /**
    * REINFORCE: append evidence, touch lastSurfacedAt, bump
@@ -34,6 +51,8 @@ export abstract class ClaimRepository {
 
   abstract listClaims(options?: {
     status?: ClaimStatus;
+    category?: ClaimCategory;
+    origin?: ClaimOrigin;
     limit?: number;
   }): Promise<Claim[]>;
 

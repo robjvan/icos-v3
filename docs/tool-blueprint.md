@@ -61,9 +61,10 @@ Failure modes:       <what can go wrong, and the failure code for each>
 
 ### 4. `core/src/tools/tool-execution.repository.ts` (only if the tool writes or gates)
 
-Approval-free reads need nothing here. Anything else must generalize
-the current `session.rename` name checks — do not add a third hardcoded
-name:
+Approval-free reads need nothing here. If a future tool gates on
+approval (none currently does — `session.rename` was de-escalated
+2026-09-23 as benign and reversible), generalize from the descriptor's
+approval policy rather than hardcoding a tool name:
 
 - `register()`: derive `awaiting_approval` vs `validated` and the bound
   approval row from the descriptor's approval policy, not the tool name.
@@ -71,12 +72,15 @@ name:
   `finishSearch` (atomic `UPDATE ... WHERE state = ... AND
   execution_token IS NULL`, exactly-once). Mutations and their ledger
   writes belong in one transaction (see `finishRename`).
+- The `awaiting_approval` resume path (`resume()`, `mirrorOutcome()`,
+  `claimRename()`) exists for pre-flip parked rows; keep it working
+  even while no tool parks.
 
 ### 5. `core/src/conversation/conversation.service.ts` (only if the tool gates or chains)
 
-- Approval-gated: extend `approvalSummary()` (currently rename-only;
-  without this the parked turn throws) and `mirrorNotice()` for the
-  reject/cancel/expire texts.
+- Approval-gated: extend `approvalSummary()` and `mirrorNotice()`
+  for the reject/cancel/expire texts. (No tool currently gates;
+  these exist for pre-flip parked rows and future tools.)
 - Approval-free and chainable: extend `continuationPair()` (currently
   search-only) so loop steps append the assistant/tool pair. Otherwise
   the tool runs once and the turn ends — which is a fine choice, just

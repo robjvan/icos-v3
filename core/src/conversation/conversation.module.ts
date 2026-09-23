@@ -18,9 +18,14 @@ import {
 import { LlmMemoryCandidateExtractor } from '../memory/llm-memory-candidate-extractor';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { ClaimIndex } from '../memory/claim-index';
 import { ClaimRepository } from '../memory/claim.repository';
 import { MemoryDatabaseService } from '../memory/memory-database.service';
+import { PromotionJournalRepository } from '../memory/promotion-journal.repository';
+import { PromotionService } from '../memory/promotion.service';
+import { RuvectorClaimIndex } from '../memory/ruvector-claim-index';
 import { SqliteClaimRepository } from '../memory/sqlite-claim.repository';
+import { SqlitePromotionJournalRepository } from '../memory/sqlite-promotion-journal.repository';
 import { SqliteMemoryCandidateRepository } from '../memory/sqlite-memory-candidate.repository';
 import { SessionDatabaseService } from '../session/session-database.service';
 import { SessionRepository } from '../session/session.repository';
@@ -32,6 +37,10 @@ import { ToolExecutionRepository } from '../tools/tool-execution.repository';
 import { ToolExecutionService } from '../tools/tool-execution.service';
 import { ToolRegistry } from '../tools/tool-registry';
 import { CandidatesController } from './candidates.controller';
+import { ClaimsController } from './claims.controller';
+import { PromotionsController } from './promotions.controller';
+import { HealthController } from '../health/health.controller';
+import { HealthService } from '../health/health.service';
 import { AgentRunRepository } from '../agent/agent-run.repository';
 import { ConversationController } from './conversation.controller';
 import { ConversationService } from './conversation.service';
@@ -70,9 +79,12 @@ const toolExecutionServiceProvider = {
     ConversationController,
     SessionsController,
     CandidatesController,
+    ClaimsController,
+    PromotionsController,
     ApprovalsController,
     ClarificationsController,
     SkillsController,
+    HealthController,
   ],
   providers: [
     coreConfigProvider,
@@ -91,6 +103,15 @@ const toolExecutionServiceProvider = {
       useClass: SqliteClaimRepository,
     },
     {
+      provide: PromotionJournalRepository,
+      useClass: SqlitePromotionJournalRepository,
+    },
+    {
+      provide: ClaimIndex,
+      useClass: RuvectorClaimIndex,
+    },
+    PromotionService,
+    {
       provide: MemoryCandidateExtractor,
       useClass: LlmMemoryCandidateExtractor,
     },
@@ -108,6 +129,7 @@ const toolExecutionServiceProvider = {
     conversationLlmClientProvider,
     DisplayPreferenceStore,
     HostHealthProvider,
+    HealthService,
     SkillService,
     CommandDispatcher,
     ToolRegistry,

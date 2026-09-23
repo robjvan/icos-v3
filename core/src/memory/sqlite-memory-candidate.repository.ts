@@ -102,6 +102,18 @@ export class SqliteMemoryCandidateRepository extends MemoryCandidateRepository {
     return saveAll(candidates);
   }
 
+  async getCandidate(id: string): Promise<MemoryCandidate | null> {
+    const row = this.database
+      .prepare(
+        `SELECT id, session_id, message_id, kind, subject, predicate, object,
+                confidence, importance, stability,
+                extractor_model, extractor_version, extracted_at, source_role
+           FROM memory_candidates WHERE id = ?`,
+      )
+      .get(id) as CandidateRow | undefined;
+    return row ? toCandidate(row) : null;
+  }
+
   async listCandidates(
     sessionId?: string,
     options?: { limit?: number },

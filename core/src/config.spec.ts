@@ -170,4 +170,22 @@ describe('loadConfig', () => {
       loadConfig({ LLM_MODEL: 'm', SKILLS_MAX_BODY_CHARS: '0' }),
     ).toThrow(/SKILLS_MAX_BODY_CHARS/);
   });
+
+  it('defaults promotion to human approval with no auto kinds', () => {
+    const config = loadConfig({ LLM_MODEL: 'm' });
+    expect(config.memoryPromotionAuto).toBe(false);
+    expect(config.memoryPromotionAutoKinds).toEqual([]);
+
+    const auto = loadConfig({
+      LLM_MODEL: 'm',
+      MEMORY_PROMOTION_AUTO: 'true',
+      MEMORY_PROMOTION_AUTO_KINDS: 'fact, observation',
+    });
+    expect(auto.memoryPromotionAuto).toBe(true);
+    expect(auto.memoryPromotionAutoKinds).toEqual(['fact', 'observation']);
+
+    expect(() =>
+      loadConfig({ LLM_MODEL: 'm', MEMORY_PROMOTION_AUTO_KINDS: 'vibe' }),
+    ).toThrow(/MEMORY_PROMOTION_AUTO_KINDS/);
+  });
 });

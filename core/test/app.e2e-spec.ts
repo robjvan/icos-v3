@@ -18,6 +18,8 @@ import { buildPlanningBlock } from '../src/agent/planning-context';
 import { ToolRegistry } from '../src/tools/tool-registry';
 import { LlmClient } from '../src/llm/llm.client';
 import { MemoryCandidateExtractor } from '../src/memory/memory-candidate-extractor';
+import { ClaimIndex } from '../src/memory/claim-index';
+import { ClaimRepository } from '../src/memory/claim.repository';
 
 describe('Conversation (e2e)', () => {
   let app: INestApplication<App> | null = null;
@@ -47,7 +49,9 @@ describe('Conversation (e2e)', () => {
   let streamFails = false;
   let extractFails = false;
   const extract = jest.fn(
-    (): Promise<
+    (
+      input: unknown,
+    ): Promise<
       {
         kind: string;
         subject: string;
@@ -62,6 +66,12 @@ describe('Conversation (e2e)', () => {
       if (extractFails) {
         return Promise.reject(new Error('extractor down'));
       }
+      // Only the preference message yields a candidate: every other
+      // turn extracts nothing, so promotion proposals stay scoped to
+      // the tests that assert them.
+      const message = (input as { userMessage?: { content?: string } })
+        .userMessage?.content;
+      if (message !== 'I prefer oak') return Promise.resolve([]);
       return Promise.resolve([
         {
           kind: 'preference',
@@ -142,6 +152,9 @@ describe('Conversation (e2e)', () => {
         memoryLlmBaseUrl: 'http://localhost:11434/v1',
         memoryLlmModel: 'test-model',
         memoryLlmTimeoutMs: 1000,
+        memoryPromotionAuto: false,
+        memoryPromotionAutoKinds: [],
+        vectorDbPath: join(dir, 'claims-vector-e2e.db'),
         skillsDirPath: join(dir, 'skills'),
         skillsEnabled: true,
         skillsMaxBodyChars: 12000,
@@ -157,6 +170,21 @@ describe('Conversation (e2e)', () => {
       .useValue({ chatWithTools, chatStreamWithTools })
       .overrideProvider(MemoryCandidateExtractor)
       .useValue({ extract })
+      .overrideProvider(ClaimIndex)
+      .useFactory({
+        // Repository-backed fake: exercises the controller path
+        // end to end; vector math is proven live, not here.
+        factory: (claims: ClaimRepository) => ({
+          indexClaim: () => Promise.resolve(),
+          searchSimilar: async (_text: string, k: number) =>
+            (await claims.listClaims({ limit: k })).map((claim) => ({
+              claimId: claim.id,
+              score: 0.1,
+            })),
+          status: () => Promise.resolve({ enabled: true }),
+        }),
+        inject: [ClaimRepository],
+      })
       .compile();
 
     const instance = moduleFixture.createNestApplication();
@@ -490,6 +518,88 @@ describe('Conversation (e2e)', () => {
     });
   });
 
+  it('promotes a candidate to a belief on approval plus sweep', async () => {
+    const first = await request(http())
+      .post('/core/conversation')
+      .send({ message: 'I prefer oak' })
+      .expect(200);
+    const sessionId = (first.body as ConversationResponse).sessionId;
+
+    // Proposal follows extraction; poll for the pending journal row.
+    let pending: { approvalId: string; state: string }[] = [];
+    for (let i = 0; i < 100 && pending.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const res = await request(http())
+        .get('/core/promotions/pending')
+        .expect(200);
+      pending = (res.body as { pending: typeof pending }).pending.filter(
+        (row) => row.state === 'proposed',
+      );
+    }
+    expect(pending).toHaveLength(1);
+
+    // Sweep before approval: skipped, nothing committed.
+    const early = await request(http())
+      .post('/core/promotions/run')
+      .expect(200);
+    expect(
+      (early.body as { summary: { new: number; skipped: number } }).summary,
+    ).toMatchObject({ new: 0, skipped: 1 });
+
+    await request(http())
+      .post(`/core/approvals/${pending[0].approvalId}/approve`)
+      .send({ sessionId })
+      .expect(200);
+
+    const run = await request(http()).post('/core/promotions/run').expect(200);
+    expect((run.body as { summary: { new: number } }).summary).toMatchObject({
+      new: 1,
+    });
+
+    // The belief is now inspectable: list, detail with evidence and
+    // journal history, and the (stub-backed) semantic surface.
+    const listed = await request(http()).get('/core/claims').expect(200);
+    const claims = (listed.body as { claims: { id: string }[] }).claims;
+    expect(claims).toHaveLength(1);
+
+    const detail = await request(http())
+      .get(`/core/claims/${claims[0]?.id}`)
+      .expect(200);
+    const body = detail.body as {
+      claim: { object: string; origin: string };
+      evidence: { object: string }[];
+      history: { operation: string; state: string }[];
+    };
+    expect(body.claim).toMatchObject({
+      object: 'e2e-subject',
+      origin: 'user',
+    });
+    expect(body.evidence).toHaveLength(1);
+    expect(body.evidence[0]?.object).toBe('e2e-subject');
+    expect(body.history).toMatchObject([
+      { operation: 'NEW', state: 'committed' },
+    ]);
+
+    const search = await request(http())
+      .get('/core/claims/search')
+      .query({ q: 'preference', k: 5 })
+      .expect(200);
+    const found = search.body as {
+      results: { id: string; score: number }[];
+      degraded: boolean;
+    };
+    expect(found.degraded).toBe(false);
+    expect(found.results.map((r) => r.id)).toEqual([claims[0]?.id]);
+
+    // Second sweep: terminal, untouched.
+    const again = await request(http())
+      .post('/core/promotions/run')
+      .expect(200);
+    expect(
+      (again.body as { summary: Record<string, number> }).summary,
+    ).toMatchObject({ new: 0, reinforced: 0, contradicted: 0, failed: 0 });
+  });
+
   it('conversation still succeeds when extraction fails', async () => {
     extractFails = true;
 
@@ -524,6 +634,29 @@ describe('Conversation (e2e)', () => {
     // Nothing persisted as conversation.
     const listed = await request(http()).get('/core/sessions').expect(200);
     expect((listed.body as { sessions: unknown[] }).sessions).toHaveLength(0);
+  });
+
+  it('GET /core/health reports runtime and host without a turn', async () => {
+    const res = await request(http()).get('/core/health').expect(200);
+
+    const body = res.body as {
+      status: string;
+      runtime: Record<string, { status: string; detail: string }>;
+      host: {
+        os: string;
+        cpuPercent: number | null;
+        memoryUsedBytes: number;
+        memoryTotalBytes: number;
+      };
+    };
+    expect(body.status).toBe('healthy');
+    expect(body.runtime.core?.status).toBe('healthy');
+    expect(body.runtime.sessions?.status).toBe('healthy');
+    expect(body.runtime.memory?.status).toBe('healthy');
+    expect(typeof body.host.os).toBe('string');
+    expect(body.host.memoryTotalBytes).toBeGreaterThan(0);
+    expect(chatWithTools).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
   });
 
   it('rejects unknown slash commands with 404', async () => {
@@ -1353,7 +1486,7 @@ describe('Conversation (e2e)', () => {
       ).toEqual(['teal local', 'mock reply', 'find teal', body.reply]);
     });
 
-    it('parks renames as 202, then resumes after approval exactly once', async () => {
+    it('executes renames inline without approval, exactly once', async () => {
       const first = await request(http())
         .post('/core/conversation')
         .send({ message: 'hello' })
@@ -1361,57 +1494,14 @@ describe('Conversation (e2e)', () => {
       const sessionId = (first.body as ConversationResponse).sessionId;
 
       chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
-      const parked = await request(http())
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      const turn = await request(http())
         .post('/core/conversation')
         .send({ message: 'call it Ward map', sessionId })
-        .expect(202);
-      const pending = parked.body as ConversationResponse;
-      expect(pending.status).toBe('approval_required');
-      expect(pending.requestId).toBeDefined();
-      expect(pending.approval).toMatchObject({
-        approvalId: anyString,
-        tool: 'session.rename',
-        args: { title: 'Ward map' },
-      });
-
-      // Nothing persisted while approval is pending.
-      const before = await request(http())
-        .get(`/core/conversation/${sessionId}`)
         .expect(200);
-      expect(
-        (before.body as HistoryResponse).messages.map((m) => m.content),
-      ).toEqual(['hello', 'mock reply']);
-
-      // The parked invocation exists with no execution attached.
-      const parkDb = new Database(join(dir, 'sessions.sqlite'), {
-        readonly: true,
-      });
-      try {
-        const parked = parkDb
-          .prepare(
-            `SELECT state, execution_json FROM tool_requests WHERE request_id = ?`,
-          )
-          .get(pending.requestId) as {
-          state: string;
-          execution_json: string | null;
-        };
-        expect(parked.state).toBe('awaiting_approval');
-        expect(parked.execution_json).toBeNull();
-      } finally {
-        parkDb.close();
-      }
-
-      await request(http())
-        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
-        .send({ sessionId })
-        .expect(200);
-
-      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
-      const resumed = await request(http())
-        .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
-        .expect(200);
-      expect((resumed.body as ConversationResponse).reply).toBe('renamed');
+      const body = turn.body as ConversationResponse;
+      expect(body.status).toBe('ok');
+      expect(body.reply).toBe('renamed');
 
       const sessions = await request(http()).get('/core/sessions').expect(200);
       const renamed = (
@@ -1419,86 +1509,21 @@ describe('Conversation (e2e)', () => {
       ).sessions.find((s) => s.sessionId === sessionId);
       expect(renamed?.title).toBe('Ward map');
 
-      // Duplicate resume answers from the durable record, no re-execution.
-      const again = await request(http())
-        .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
-        .expect(200);
-      expect((again.body as ConversationResponse).reply).toBe('renamed');
-      const after = await request(http())
-        .get(`/core/conversation/${sessionId}`)
+      // No approval minted for the approval-free path.
+      const approvals = await request(http())
+        .get('/core/approvals')
+        .query({ sessionId })
         .expect(200);
       expect(
-        (after.body as HistoryResponse).messages.map((m) => m.content),
-      ).toEqual(['hello', 'mock reply', 'call it Ward map', 'renamed']);
-    });
-
-    it('reconsiders after rejection with zero execution', async () => {
-      const first = await request(http())
-        .post('/core/conversation')
-        .send({ message: 'hello' })
-        .expect(200);
-      const sessionId = (first.body as ConversationResponse).sessionId;
-
-      chatWithTools.mockResolvedValueOnce(renameCall('Nope'));
-      const parked = await request(http())
-        .post('/core/conversation')
-        .send({ message: 'rename it', sessionId })
-        .expect(202);
-      const pending = parked.body as ConversationResponse;
-
-      await request(http())
-        .post(`/core/approvals/${pending.approval?.approvalId}/reject`)
-        .send({ sessionId })
-        .expect(200);
-
-      // The denial becomes an observation: the agent answers from it
-      // instead of dying on the mirror notice.
-      chatWithTools.mockResolvedValueOnce(finalText('leaving the name'));
-      const resumed = await request(http())
-        .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
-        .expect(200);
-      expect((resumed.body as ConversationResponse).status).toBe('ok');
-      expect((resumed.body as ConversationResponse).outcome).toBeUndefined();
-      expect((resumed.body as ConversationResponse).reply).toBe(
-        'leaving the name',
-      );
-
-      const sessions = await request(http()).get('/core/sessions').expect(200);
-      const kept = (
-        sessions.body as { sessions: { sessionId: string; title?: string }[] }
-      ).sessions.find((s) => s.sessionId === sessionId);
-      expect(kept?.title).toBeUndefined();
+        (approvals.body as { approvals: unknown[] }).approvals,
+      ).toHaveLength(0);
 
       const history = await request(http())
         .get(`/core/conversation/${sessionId}`)
         .expect(200);
       expect(
         (history.body as HistoryResponse).messages.map((m) => m.content),
-      ).toEqual(['hello', 'mock reply', 'rename it', 'leaving the name']);
-
-      const db = new Database(join(dir, 'sessions.sqlite'), {
-        readonly: true,
-      });
-      try {
-        const runs = db
-          .prepare(
-            `SELECT state, termination_json FROM agent_runs
-             WHERE session_id = ? ORDER BY rowid`,
-          )
-          .all(sessionId) as {
-          state: string;
-          termination_json: string;
-        }[];
-        expect(runs).toHaveLength(2);
-        expect(runs[1]).toMatchObject({ state: 'completed' });
-        expect(JSON.parse(runs[1].termination_json)).toMatchObject({
-          reason: 'final_answer',
-        });
-      } finally {
-        db.close();
-      }
+      ).toEqual(['hello', 'mock reply', 'call it Ward map', 'renamed']);
     });
 
     it('validates resume requests and denies foreign sessions', async () => {
@@ -1520,11 +1545,12 @@ describe('Conversation (e2e)', () => {
         .expect(200);
       const sessionId = (first.body as ConversationResponse).sessionId;
       chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
-      const parked = await request(http())
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      const turn = await request(http())
         .post('/core/conversation')
         .send({ message: 'rename it', sessionId })
-        .expect(202);
-      const pending = parked.body as ConversationResponse;
+        .expect(200);
+      const requestId = (turn.body as ConversationResponse).requestId;
 
       const fork = await request(http())
         .post('/core/conversation')
@@ -1534,11 +1560,11 @@ describe('Conversation (e2e)', () => {
       expect(forkId).not.toBe(sessionId);
       await request(http())
         .post('/core/conversation/resume')
-        .send({ sessionId: forkId, requestId: pending.requestId })
+        .send({ sessionId: forkId, requestId })
         .expect(400);
     });
 
-    it('streams tool and approval events over SSE', async () => {
+    it('streams tool events over SSE without approval parking', async () => {
       const first = await request(http())
         .post('/core/conversation')
         .send({ message: 'hello' })
@@ -1556,14 +1582,18 @@ describe('Conversation (e2e)', () => {
       expect(searched.text).toContain('"reply":"teal is local"');
 
       chatStreamWithTools.mockResolvedValueOnce(renameCall('Ward map'));
-      const parked = await request(http())
+      chatStreamWithTools.mockResolvedValueOnce(finalText('renamed anyway'));
+      const renamed = await request(http())
         .post('/core/conversation/stream')
         .send({ message: 'rename it', sessionId })
         .expect(200)
         .expect('Content-Type', /event-stream/);
-      expect(parked.text).toContain('event: approval');
-      expect(parked.text).toContain('event: done');
-      expect(parked.text).not.toContain('event: token');
+      // Approval-free tools execute inline: tool events, no approval
+      // event, and the turn completes in one stream.
+      expect(renamed.text).toContain('event: tool');
+      expect(renamed.text).toContain('"state":"succeeded"');
+      expect(renamed.text).not.toContain('event: approval');
+      expect(renamed.text).toContain('event: done');
     });
 
     it('keeps the execution record across /undo without re-executing', async () => {
@@ -1574,20 +1604,12 @@ describe('Conversation (e2e)', () => {
       const sessionId = (first.body as ConversationResponse).sessionId;
 
       chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
-      const parked = await request(http())
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      const turn = await request(http())
         .post('/core/conversation')
         .send({ message: 'rename it', sessionId })
-        .expect(202);
-      const pending = parked.body as ConversationResponse;
-      await request(http())
-        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
-        .send({ sessionId })
         .expect(200);
-      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
-      await request(http())
-        .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
-        .expect(200);
+      const requestId = (turn.body as ConversationResponse).requestId;
 
       // Undo hides the turn text but the ledger still answers.
       await request(http())
@@ -1596,7 +1618,7 @@ describe('Conversation (e2e)', () => {
         .expect(200);
       const resumed = await request(http())
         .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
+        .send({ sessionId, requestId })
         .expect(200);
       expect((resumed.body as ConversationResponse).reply).toBe('renamed');
       const history = await request(http())
@@ -1723,7 +1745,7 @@ describe('Conversation (e2e)', () => {
       ]);
     });
 
-    it('cancels a parked run without touching the approval', async () => {
+    it('cancels runs and validates run identity', async () => {
       const first = await request(http())
         .post('/core/conversation')
         .send({ message: 'hello' })
@@ -1731,14 +1753,14 @@ describe('Conversation (e2e)', () => {
       const sessionId = (first.body as ConversationResponse).sessionId;
 
       chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
-      const parked = await request(http())
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      await request(http())
         .post('/core/conversation')
         .send({ message: 'rename it', sessionId })
-        .expect(202);
-      const pending = parked.body as ConversationResponse;
+        .expect(200);
 
-      // Find the parked run row for this turn (latest run, since the
-      // seed 'hello' turn has its own completed run).
+      // Find the completed run row for this turn (latest run, since
+      // the seed 'hello' turn has its own completed run).
       const db = new Database(join(dir, 'sessions.sqlite'), {
         readonly: true,
       });
@@ -1754,40 +1776,8 @@ describe('Conversation (e2e)', () => {
         db.close();
       }
 
-      const cancelled = await request(http())
-        .post('/core/conversation/runs/cancel')
-        .send({ sessionId, runId })
-        .expect(200);
-      expect(cancelled.body).toMatchObject({
-        runId,
-        sessionId,
-        state: 'cancelled',
-        cancelled: true,
-      });
-
-      // The approval is untouched: still pending, still resolvable.
-      await request(http())
-        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
-        .send({ sessionId })
-        .expect(200);
-
-      // Resuming resolves the parked turn through M8, but the
-      // cancelled run never continues planning: the legacy path
-      // finalizes the existing execution with a text answer
-      // (no new tool calls — tools stay empty).
-      const resumed = await request(http())
-        .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
-        .expect(200);
-      expect((resumed.body as ConversationResponse).status).toBe('ok');
-      const finalLlm = chatWithTools.mock.calls.find(
-        (call) =>
-          ((call[0] as { tools?: unknown[] }).tools?.length ?? -1) === 0,
-      );
-      expect(finalLlm).toBeDefined();
-
       // Cancelling a completed run is a no-op success (already
-      // terminal; the legacy resume terminal above owns the state).
+      // terminal); the completed turn owns the state.
       const again = await request(http())
         .post('/core/conversation/runs/cancel')
         .send({ sessionId, runId })
@@ -1811,7 +1801,7 @@ describe('Conversation (e2e)', () => {
         .expect(400);
     });
 
-    it('resumes a parked approval across restart', async () => {
+    it('resumes a completed rename across restart from the durable record', async () => {
       const first = await request(http())
         .post('/core/conversation')
         .send({ message: 'hello' })
@@ -1819,30 +1809,28 @@ describe('Conversation (e2e)', () => {
       const sessionId = (first.body as ConversationResponse).sessionId;
 
       chatWithTools.mockResolvedValueOnce(renameCall('Ward map'));
-      const parked = await request(http())
+      chatWithTools.mockResolvedValueOnce(finalText('renamed'));
+      const turn = await request(http())
         .post('/core/conversation')
         .send({ message: 'rename it', sessionId })
-        .expect(202);
-      const pending = parked.body as ConversationResponse;
+        .expect(200);
+      const requestId = (turn.body as ConversationResponse).requestId;
 
-      // Restart while the approval is still pending.
+      // Restart after completion.
       await app?.close();
       app = await createApp(
         join(dir, 'sessions.sqlite'),
         join(dir, 'memories.sqlite'),
       );
 
-      // The approval survived; the resumed run continues planning.
-      chatWithTools.mockResolvedValueOnce(finalText('renamed after restart'));
-      await request(http())
-        .post(`/core/approvals/${pending.approval?.approvalId}/approve`)
-        .send({ sessionId })
-        .expect(200);
+      // The durable result answers; nothing re-executes, no LLM call.
+      chatWithTools.mockClear();
       const resumed = await request(http())
         .post('/core/conversation/resume')
-        .send({ sessionId, requestId: pending.requestId })
+        .send({ sessionId, requestId })
         .expect(200);
-      expect((resumed.body as ConversationResponse).status).toBe('ok');
+      expect((resumed.body as ConversationResponse).reply).toBe('renamed');
+      expect(chatWithTools).not.toHaveBeenCalled();
 
       const sessions = await request(http()).get('/core/sessions').expect(200);
       const renamed = (

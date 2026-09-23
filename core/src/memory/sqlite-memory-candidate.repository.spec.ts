@@ -24,6 +24,9 @@ function testConfig(memoryDbPath: string, dir: string): CoreConfig {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'mem',
     memoryLlmTimeoutMs: 1000,
+    memoryPromotionAuto: false,
+    memoryPromotionAutoKinds: [],
+    vectorDbPath: join(dir, 'claims-vector-test.db'),
     skillsDirPath: join(dir, 'skills-unused'),
     skillsEnabled: true,
     skillsMaxBodyChars: 12000,
@@ -95,6 +98,16 @@ describe('SqliteMemoryCandidateRepository', () => {
       extractorVersion: 'memory-extraction-v2',
     });
     expect(saved?.extractedAt).toBeDefined();
+  });
+
+  it('fetches single rows and null for unknown ids', async () => {
+    const repository = openRepo();
+    const [saved] = await repository.saveCandidates([candidate('s1', 7)]);
+
+    expect((await repository.getCandidate(saved.id))?.object).toBe(
+      'TypeScript',
+    );
+    expect(await repository.getCandidate('missing')).toBeNull();
   });
 
   it('lists newest-first, optionally filtered by session', async () => {

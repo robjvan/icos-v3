@@ -114,7 +114,11 @@ describe('openDatabase', () => {
           name: string;
         }[]
       ).map((row) => row.name);
-      expect(names).toEqual(['memory_candidates', 'claims']);
+      expect(names).toEqual([
+        'memory_candidates',
+        'claims',
+        'promotion_journal',
+      ]);
     } finally {
       db.close();
     }

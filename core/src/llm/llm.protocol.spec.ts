@@ -161,7 +161,7 @@ describe('M8b tool protocol', () => {
         },
       })),
     });
-    expect(tools[1].approval).toBe('required');
+    expect(tools[1].approval).toBe('none');
   });
 
   it.each([null, 'I will search'])(

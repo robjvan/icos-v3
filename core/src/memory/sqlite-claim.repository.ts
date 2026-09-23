@@ -13,7 +13,11 @@ import type {
   NewClaim,
 } from './claim';
 import { CLAIM_STATUSES } from './claim';
-import { identityKey, type Triple } from './claim-identity';
+import {
+  identityKey,
+  normalizeTripleField,
+  type Triple,
+} from './claim-identity';
 import { ClaimRepository } from './claim.repository';
 import { MemoryDatabaseService } from './memory-database.service';
 
@@ -163,12 +167,13 @@ export class SqliteClaimRepository extends ClaimRepository {
       .prepare(
         `INSERT INTO claims
            (id, subject, predicate, object, identity_key,
+            subject_norm, predicate_norm,
             category, status,
             extractor_confidence, confidence,
             first_asserted_at, last_surfaced_at, origin,
             evidence_json, entities_json, promotion,
             created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -176,6 +181,8 @@ export class SqliteClaimRepository extends ClaimRepository {
         claim.predicate,
         claim.object,
         key,
+        normalizeTripleField(claim.subject),
+        normalizeTripleField(claim.predicate),
         claim.category,
         claim.status,
         claim.extractorConfidence,
@@ -204,6 +211,23 @@ export class SqliteClaimRepository extends ClaimRepository {
       .prepare('SELECT * FROM claims WHERE identity_key = ?')
       .get(identityKey(triple)) as ClaimRow | undefined;
     return row ? toClaim(row) : null;
+  }
+
+  async findBySubjectPredicate(
+    subject: string,
+    predicate: string,
+  ): Promise<Claim[]> {
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM claims
+          WHERE subject_norm = ? AND predicate_norm = ?
+          ORDER BY rowid DESC`,
+      )
+      .all(
+        normalizeTripleField(subject),
+        normalizeTripleField(predicate),
+      ) as ClaimRow[];
+    return rows.map(toClaim);
   }
 
   async appendEvidence(
@@ -252,6 +276,8 @@ export class SqliteClaimRepository extends ClaimRepository {
 
   async listClaims(options?: {
     status?: ClaimStatus;
+    category?: ClaimCategory;
+    origin?: ClaimOrigin;
     limit?: number;
   }): Promise<Claim[]> {
     const limit = Math.min(options?.limit ?? 50, MAX_LIST_LIMIT);
@@ -260,6 +286,14 @@ export class SqliteClaimRepository extends ClaimRepository {
     if (options?.status !== undefined) {
       clauses.push('status = ?');
       params.push(options.status);
+    }
+    if (options?.category !== undefined) {
+      clauses.push('category = ?');
+      params.push(options.category);
+    }
+    if (options?.origin !== undefined) {
+      clauses.push('origin = ?');
+      params.push(options.origin);
     }
     params.push(limit);
     const sql =

@@ -79,47 +79,55 @@ export class ToolExecutionService {
       record = this.required(record.requestId);
     }
     if (record.state === 'validated') {
-      const token = this.ledger.claimSearch(record.requestId, (saved) =>
-        this.validate(saved),
-      );
-      if (token) {
-        record = this.required(record.requestId);
-        const searchPromise = this.search(record);
-        const outcomePromise = searchPromise.then(
-          (outcome) => ({ kind: 'outcome' as const, outcome }),
-          (): { kind: 'outcome'; outcome: ExecutionOutcome } => ({
-            kind: 'outcome',
-            outcome: { ok: false, failure: { code: 'search_failed' } },
-          }),
+      const request =
+        record.validation.ok && 'request' in record.validation
+          ? record.validation.request
+          : null;
+      if (request?.name === 'session.rename') {
+        record = this.renameInline(record);
+      } else {
+        const token = this.ledger.claimSearch(record.requestId, (saved) =>
+          this.validate(saved),
         );
-        let timeoutId: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
-          timeoutId = setTimeout(
-            () => resolve({ kind: 'timeout' }),
-            this.searchTimeoutMs,
+        if (token) {
+          record = this.required(record.requestId);
+          const searchPromise = this.search(record);
+          const outcomePromise = searchPromise.then(
+            (outcome) => ({ kind: 'outcome' as const, outcome }),
+            (): { kind: 'outcome'; outcome: ExecutionOutcome } => ({
+              kind: 'outcome',
+              outcome: { ok: false, failure: { code: 'search_failed' } },
+            }),
           );
-        });
-        const winner = await Promise.race([outcomePromise, timeoutPromise]);
-        if (winner.kind === 'outcome') {
-          if (timeoutId !== undefined) clearTimeout(timeoutId);
-          this.ledger.finishSearch(record.requestId, token, winner.outcome);
-        } else {
-          const background = outcomePromise.then(({ outcome }) => {
-            try {
-              this.ledger.finishSearch(record.requestId, token, outcome);
-            } catch {
-              // Leave the claim ambiguous; explicit release resolves it.
-            }
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
+            timeoutId = setTimeout(
+              () => resolve({ kind: 'timeout' }),
+              this.searchTimeoutMs,
+            );
           });
-          const tracked = background.finally(() => {
-            if (this.inFlight.get(record.requestId) === tracked)
-              this.inFlight.delete(record.requestId);
-          });
-          this.inFlight.set(record.requestId, tracked);
-          return this.required(record.requestId);
+          const winner = await Promise.race([outcomePromise, timeoutPromise]);
+          if (winner.kind === 'outcome') {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            this.ledger.finishSearch(record.requestId, token, winner.outcome);
+          } else {
+            const background = outcomePromise.then(({ outcome }) => {
+              try {
+                this.ledger.finishSearch(record.requestId, token, outcome);
+              } catch {
+                // Leave the claim ambiguous; explicit release resolves it.
+              }
+            });
+            const tracked = background.finally(() => {
+              if (this.inFlight.get(record.requestId) === tracked)
+                this.inFlight.delete(record.requestId);
+            });
+            this.inFlight.set(record.requestId, tracked);
+            return this.required(record.requestId);
+          }
         }
+        record = this.required(record.requestId);
       }
-      record = this.required(record.requestId);
     }
     if (record.state === 'awaiting_approval') {
       return this.resume(record.requestId, record.sessionId, options);
@@ -131,6 +139,33 @@ export class ToolExecutionService {
       return this.required(record.requestId);
     }
     return this.maybeFinal(record.requestId, options);
+  }
+
+  /**
+   * Inline rename execution (approval-free policy). Claims the
+   * validated record, applies the local title mutation, and persists
+   * the outcome — the same claim/finish pair as the resume path,
+   * minus the approval gate.
+   */
+  private renameInline(record: ToolExecutionRecord): ToolExecutionRecord {
+    const token = this.ledger.claimRenameInline(record.requestId, (saved) =>
+      this.validate(saved),
+    );
+    if (token) {
+      const claimed = this.required(record.requestId);
+      const validation = claimed.validation;
+      if (
+        validation.ok &&
+        'request' in validation &&
+        validation.request.name === 'session.rename'
+      ) {
+        this.ledger.finishRename(claimed.requestId, token, {
+          sessionId: claimed.sessionId,
+          title: validation.request.args.title,
+        });
+      }
+    }
+    return this.required(record.requestId);
   }
 
   /**
@@ -256,13 +291,11 @@ export class ToolExecutionService {
     if (!validation.ok)
       return { ok: false, failure: { code: validation.failure.code } };
     const descriptor = this.registry.lookup(validation.request.name);
-    if (validation.request.name === 'session.search') {
-      if (descriptor?.approval !== 'none')
-        return { ok: false, failure: { code: 'unpermitted_tool' } };
-    } else {
-      if (descriptor?.approval !== 'required')
-        return { ok: false, failure: { code: 'unpermitted_tool' } };
-    }
+    // Both tools are approval-free by policy (rename was de-escalated:
+    // benign, reversible, user decision). Anything requiring approval
+    // fails closed here — there is currently no such tool.
+    if (descriptor?.approval !== 'none')
+      return { ok: false, failure: { code: 'unpermitted_tool' } };
     try {
       if (
         typeof call.rawArguments !== 'string' ||

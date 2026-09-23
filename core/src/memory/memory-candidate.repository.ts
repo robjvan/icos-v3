@@ -10,6 +10,9 @@ export abstract class MemoryCandidateRepository {
     candidates: NewMemoryCandidate[],
   ): Promise<MemoryCandidate[]>;
 
+  /** Fetch one ledger row by id; null when unknown (never invent). */
+  abstract getCandidate(id: string): Promise<MemoryCandidate | null>;
+
   abstract listCandidates(
     sessionId?: string,
     options?: { limit?: number },

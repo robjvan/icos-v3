@@ -15,6 +15,7 @@ import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import type { MemoryExtractionInput } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
 import type { MemoryCandidate } from '../memory/memory-candidate';
+import { PromotionService } from '../memory/promotion.service';
 import { CommandDispatcher } from '../commands/command-dispatcher';
 import { DisplayPreferenceStore } from '../commands/display-preferences';
 import { HostHealthProvider } from '../commands/host-health';
@@ -68,6 +69,9 @@ function testConfig(overrides: Partial<CoreConfig> = {}): CoreConfig {
     memoryLlmBaseUrl: 'http://localhost:11434/v1',
     memoryLlmModel: 'test-model',
     memoryLlmTimeoutMs: 1000,
+    memoryPromotionAuto: false,
+    memoryPromotionAutoKinds: [],
+    vectorDbPath: '/tmp/icos-test-claims-vector.db',
     skillsDirPath: '/tmp/icos-test-skills-missing',
     skillsEnabled: true,
     skillsMaxBodyChars: 12000,
@@ -211,6 +215,10 @@ function setup(
   if (consumeImpl) tools.consume.mockImplementation(consumeImpl);
   const registry = new ToolRegistry();
   const agentRuns = stubAgentRuns();
+  const proposeCandidates = jest.fn<Promise<unknown[]>, [MemoryCandidate[]]>(
+    () => Promise.resolve([]),
+  );
+  const promotion = { proposeCandidates } as unknown as PromotionService;
   return {
     service: new ConversationService(
       store,
@@ -223,6 +231,7 @@ function setup(
       registry,
       agentRuns.service,
       config,
+      promotion,
     ),
     repository,
     chatWithTools,
@@ -231,6 +240,7 @@ function setup(
     agentRuns,
     extract,
     saveCandidates,
+    proposeCandidates,
   };
 }
 
@@ -278,9 +288,7 @@ describe('ConversationService', () => {
     const system = String(sent.messages[0].content);
     expect(system).toContain('Goal for this turn: find teal');
     expect(system).toContain('session.search (runs immediately)');
-    expect(system).toContain(
-      'session.rename (pauses for human approval and ends your turn)',
-    );
+    expect(system).toContain('session.rename (runs immediately)');
     expect(system).toContain('at most 5 tool steps');
   });
 
@@ -1782,6 +1790,22 @@ describe('ConversationService', () => {
           extractorVersion: 'memory-extraction-v2',
         },
       ]);
+    });
+
+    it('chains saved candidates into promotion proposals', async () => {
+      const { service, proposeCandidates } = setup(
+        testConfig(),
+        undefined,
+        undefined,
+        () => Promise.resolve([preference]),
+      );
+
+      await service.converse('I prefer TypeScript');
+      await flushMicrotasks();
+      await flushMicrotasks();
+
+      expect(proposeCandidates).toHaveBeenCalledTimes(1);
+      expect(proposeCandidates.mock.calls[0][0]).toHaveLength(1);
     });
 
     it('extracts after streamed turns too', async () => {
