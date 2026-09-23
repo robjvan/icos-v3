@@ -3,7 +3,7 @@
 <center>
 
 ![Status](https://img.shields.io/badge/Status-WIP-orange)
-![Updated](https://img.shields.io/badge/Updated-2026%2F09%2F10-CBA701)
+![Updated](https://img.shields.io/badge/Updated-2026%2F09%23-CBA701)
 ![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen)
 
 ![Node.js](https://img.shields.io/badge/Node.js-24.13.0-red)
@@ -99,7 +99,7 @@ It exists primarily as a controlled environment for experimenting with agent arc
 
 ## Current Status
 
-**M1–M7 are complete.**
+**M1–M9 are complete. M10 (epistemic memory) is in progress.**
 
 The current system provides:
 
@@ -115,8 +115,11 @@ The current system provides:
 - Structured human approvals
 - Structured clarification requests
 - Standard-format skills support
+- Tool integration with a durable invocation ledger
+- Agent orchestration (bounded plan → act → observe loop)
 
-The next milestone is **M8: Tools**.
+The active milestone is **M10: Epistemic Memory** (evidence → beliefs
+with provenance, human-approved promotion, contradiction handling).
 
 Development is active and the architecture is expected to change substantially as new capabilities are introduced.
 
@@ -187,14 +190,14 @@ play with the stack.
   Resources). The web-client image compiles the Angular app during
   `docker compose build`, which needs ~1.5 GB; on a 2 GB Docker host the
   build fails with esbuild `JS heap out of memory` errors.
+- **8 GB VRAM minimum** if you serve models through the Docker Model
+  Runner (memory + chat models share one GPU budget; below this the
+  runner evicts or degrades models).
 - **Node.js 24.13.0** and **npm 11.6.2** — only needed for local development
   outside Docker.
-- An OpenAI-compatible LLM endpoint.
+- An OpenAI-compatible LLM endpoint (local or remote; see below).
 
 The model itself does not need to run on the same machine.
-
-Local models can be provided through software such as Ollama or llama.cpp, via
-the Docker Model Runner, or remote providers can be used where appropriate.
 
 ---
 
@@ -249,10 +252,15 @@ The exact variables and defaults may change as development continues, so **`core
 
 ## Run ICOS (Docker — recommended)
 
+New users without a local model setup should start here: **one command,
+zero sidecars.** The Docker Model Runner serves the memory model (and,
+eventually, the chat model) inside the compose stack — no Ollama daemon,
+no separate model downloads, no extra terminals.
+
 From the repository root:
 
 ```sh
-docker compose up --build
+docker compose -f docker-compose-dmr.yml up --build -d
 ```
 
 Once the `icos-v3-core` service is healthy, open:
@@ -263,15 +271,36 @@ http://localhost:4200
 
 (Or `http://<host>:4200` when running on another machine on your network.)
 
-The development chat interface should be available there.
+The development chat interface should be available there. Give the stack
+a minute after first boot: models download once (GBs) and the vector
+index rebuilds before recall is at full strength.
 
-Stop with `Ctrl+C`, or `docker compose down` from another shell.
+Stop with `docker compose -f docker-compose-dmr.yml down`.
+
+> **DMR status: in testing.** The compose file, model refs, and VRAM
+> behaviour are still being validated. It works today; treat sharp
+> edges as expected.
 
 ---
 
-## Run ICOS locally (without Docker)
+## Run ICOS with your own models (Docker)
 
-For bare-metal development:
+If you already run Ollama, llama.cpp, or a remote provider, use the
+default compose file and point Core at your endpoints:
+
+```sh
+docker compose up --build -d
+```
+
+Configure `LLM_*` / `MEMORY_*` in `core/.env` (see Configuration
+below). Inside the container, `localhost` means the container itself —
+use `http://host.docker.internal:<port>/v1` for host-local models.
+
+---
+
+## Run ICOS locally (legacy, without Docker)
+
+For bare-metal development (self-configured Ollama + `npm` + `ng serve`):
 
 ```sh
 cd core
@@ -280,6 +309,9 @@ npm run start
 ```
 
 Then open `http://localhost:4200` as above.
+
+This path still works but is no longer the recommended way to try the
+stack — prefer the DMR compose file unless you have a reason not to.
 
 ---
 
@@ -357,9 +389,14 @@ The project is organized around the runtime and its experimental evidence.
 ```text
 core/                   # ICOS runtime
   Dockerfile            # Dev server image for docker-compose use
-  .env.sample           # Authoritative runtime configuration template
+  ...                   # Project files
+
+web-cient/
+  Dockerfile            # Dev web client image for docker-compose use
+  ...                   # Project files
 
 docker-compose.yml      # Supported launch path (icos-v3-core service)
+docker-compose-dmr.yml  # DMR launch path (models served in-stack; in testing)
 
 .reference/
   plans/                # Milestone plans
