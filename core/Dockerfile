@@ -1,9 +1,11 @@
 # Dev server for local docker-compose use.
-FROM node:24-alpine
+# glibc base, not alpine/musl: native modules without musl prebuilds
+# (e.g. RuVector — see M10a evidence) fail closed on alpine.
+FROM node:24-slim
 
 # Native Node modules such as better-sqlite3 may need to compile from source.
-# Alpine does not include the required build toolchain by default.
-RUN apk add --no-cache python3 make g++
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
 COPY package*.json ./
