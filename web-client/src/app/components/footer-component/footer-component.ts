@@ -2,12 +2,15 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  effect,
   inject,
   OnDestroy,
+  OnInit,
   signal,
 } from '@angular/core';
 import { LucideMoon, LucideSun } from '@lucide/angular';
 
+import { HealthService, ramPercent } from '../../services/health.service';
 import { ThemeService } from '../../services/theme.service';
 
 enum ServerStatus {
@@ -15,10 +18,6 @@ enum ServerStatus {
   OFFLINE = 'Offline',
 }
 
-// TODO(core health endpoint): all values below are static placeholders. There
-// is no HTTP /health endpoint — health today is only the `/health`
-// slash-command text via the conversation API. Wire this footer to a real
-// server endpoint once one lands; until then never present these as live data.
 @Component({
   selector: 'app-footer-component',
   imports: [LucideMoon, LucideSun],
@@ -26,13 +25,24 @@ enum ServerStatus {
   styleUrl: './footer-component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class FooterComponent implements OnDestroy {
+export class FooterComponent implements OnInit, OnDestroy {
   private readonly themeService = inject(ThemeService);
+  private readonly healthService = inject(HealthService);
 
   private readonly now = signal(new Date());
-  private readonly timer = setInterval(() => {
+  private readonly clockTimer = setInterval(() => {
     this.now.set(new Date());
   }, 1000);
+  private healthTimer: ReturnType<typeof setInterval> | undefined;
+
+  constructor() {
+    // Restart the poll when the settings slider changes the interval.
+    // The effect body only manages the timer; the fetch runs async in
+    // the timer callback, never as a synchronous signal write.
+    effect(() => {
+      this.restartHealthPoll(this.healthService.pollIntervalSeconds());
+    });
+  }
 
   readonly isDark = computed(() => this.themeService.theme() === 'dark');
 
@@ -51,47 +61,61 @@ export class FooterComponent implements OnDestroy {
     }),
   );
 
+  readonly cpuUsage = computed(() => {
+    const cpu = this.healthService.health()?.host.cpuPercent;
+    return cpu === null || cpu === undefined ? 'n/a' : cpu;
+  });
+
+  readonly ramUsage = computed(() => {
+    const health = this.healthService.health();
+    return health === null ? 'n/a' : ramPercent(health);
+  });
+
+  readonly serverStatus = computed(() =>
+    this.healthService.health()?.status === 'healthy' &&
+    this.healthService.error() === null
+      ? ServerStatus.ONLINE
+      : ServerStatus.OFFLINE,
+  );
+
   readonly serverStatusClass = computed(() =>
     // Badge-grade text colors: both pass 4.5:1 on either theme background.
-    this.serverStatus === ServerStatus.OFFLINE
+    this.serverStatus() === ServerStatus.OFFLINE
       ? 'text-(--accent-red)'
       : 'text-(--badge-sage-text)',
   );
 
+  readonly healthTitle = computed(() => {
+    const error = this.healthService.error();
+    if (error !== null) {
+      return `Health unavailable: ${error}`;
+    }
+    const health = this.healthService.health();
+    if (health === null) {
+      return 'Loading system health…';
+    }
+    const { os, arch, cpuCores } = health.host;
+    return `${os} · ${arch} · ${cpuCores} cores`;
+  });
+
+  ngOnInit(): void {
+    void this.healthService.refresh();
+    this.restartHealthPoll(this.healthService.pollIntervalSeconds());
+  }
+
   ngOnDestroy(): void {
-    clearInterval(this.timer);
+    clearInterval(this.clockTimer);
+    clearInterval(this.healthTimer);
   }
 
   toggleTheme(): void {
     this.themeService.toggle();
   }
 
-  get currentContext(): string {
-    const ctx = 216000; // TODO: Replace with values from backend
-    let maxCtx = 1000000; // TODO: Replace with values from backend
-
-    const used = ctx / maxCtx;
-
-    if (maxCtx > 999999) {
-      maxCtx = maxCtx / 1000000;
-    } else {
-      maxCtx = maxCtx / 1000;
-    }
-
-    return maxCtx > 999999
-      ? `${used * 100}% ${ctx / 1000}k of ${maxCtx}K`
-      : `${used * 100}% ${ctx / 1000}k of ${maxCtx}M`;
-  }
-
-  get cpuUsage(): number {
-    return 6.2;
-  }
-
-  get ramUsage(): number {
-    return 32.3;
-  }
-
-  get serverStatus(): ServerStatus {
-    return ServerStatus.ONLINE;
+  private restartHealthPoll(intervalSeconds: number): void {
+    clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(() => {
+      void this.healthService.refresh();
+    }, intervalSeconds * 1000);
   }
 }

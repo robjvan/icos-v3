@@ -38,5 +38,24 @@
         </div>
       </dd>
     </div>
+    <div>
+      <dt><label for="health-poll">Health poll interval</label></dt>
+      <dd>
+        {{ healthPollSeconds() }}s
+        <input
+          id="health-poll"
+          type="range"
+          [min]="minHealthPollSeconds"
+          [max]="maxHealthPollSeconds"
+          [value]="healthPollSeconds()"
+          (input)="onHealthPollInput($event)"
+        />
+      </dd>
+      <dd class="hint">
+        How often the footer status bar refreshes system health (CPU, RAM,
+        status) from <span class="mono">GET /core/health</span>. Persisted in
+        this browser only.
+      </dd>
+    </div>
   </dl>
 </section>

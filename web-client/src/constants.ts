@@ -12,3 +12,4 @@ export const APPROVALS_ENDPOINT = '/core/approvals';
 export const CLARIFICATIONS_ENDPOINT = '/core/clarifications';
 export const MEMORY_CANDIDATES_ENDPOINT = '/core/memory-candidates';
 export const SKILLS_ENDPOINT = '/core/skills';
+export const HEALTH_ENDPOINT = '/core/health';

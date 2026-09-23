@@ -15,6 +15,7 @@ import {
   formatUptime,
   percent,
 } from './host-health';
+import { buildHealthReport } from '../health/health-report';
 
 export interface RuntimeCommandDeps {
   sessions: SessionStore;
@@ -24,8 +25,6 @@ export interface RuntimeCommandDeps {
   host: HostHealthProvider;
 }
 
-type CheckStatus = 'healthy' | 'degraded' | 'unknown';
-
 class HealthCommand implements SlashCommandHandler {
   readonly name = 'health';
   readonly description =
@@ -33,76 +32,12 @@ class HealthCommand implements SlashCommandHandler {
   constructor(private readonly deps: RuntimeCommandDeps) {}
 
   async execute(): Promise<CommandResult> {
-    const { sessions, candidates, config, host } = this.deps;
-    const checks: Record<string, { status: CheckStatus; detail: string }> = {
-      core: {
-        status: 'healthy',
-        detail: `uptime ${Math.floor(process.uptime())}s`,
-      },
-    };
-    try {
-      await sessions.pingStores();
-      checks.sessions = { status: 'healthy', detail: 'sessions database ok' };
-    } catch (err) {
-      checks.sessions = {
-        status: 'degraded',
-        detail: err instanceof Error ? err.message : 'unreachable',
-      };
-    }
-    try {
-      await candidates.ping();
-      checks.memory = { status: 'healthy', detail: 'memory database ok' };
-    } catch (err) {
-      checks.memory = {
-        status: 'degraded',
-        detail: err instanceof Error ? err.message : 'unreachable',
-      };
-    }
-    // Configured is not healthy: no active probe exists, so reachability
-    // stays `unknown` rather than claiming what was never checked.
-    const llmConfigured = Boolean(config.llmBaseUrl && config.llmModel);
-    checks.llm = llmConfigured
-      ? {
-          status: 'unknown',
-          detail: `configured (provider=${config.provider}, model=${config.llmModel}); reachability not probed`,
-        }
-      : { status: 'degraded', detail: 'LLM provider not configured' };
+    const { config } = this.deps;
+    const report = await buildHealthReport(this.deps);
+    const checks = report.runtime;
+    const hostHealth = report.host;
+    const overall = report.status;
 
-    const hostHealth = await host.collect();
-    const overall =
-      checks.sessions.status === 'degraded' ||
-      checks.memory.status === 'degraded' ||
-      checks.llm.status === 'degraded'
-        ? 'degraded'
-        : 'healthy';
-
-    const data: Record<string, unknown> = {
-      runtime: {
-        core: checks.core,
-        sessions: checks.sessions,
-        memory: checks.memory,
-        llm: {
-          status: checks.llm.status,
-          detail: checks.llm.detail,
-          provider: config.provider,
-          model: config.llmModel,
-        },
-      },
-      host: {
-        os: hostHealth.os,
-        arch: hostHealth.arch,
-        uptimeSeconds: hostHealth.uptimeSeconds,
-        cpuCores: hostHealth.cpuCores,
-        cpuPercent: hostHealth.cpuPercent,
-        loadAverage: hostHealth.loadAverage,
-        memoryUsedBytes: hostHealth.memoryUsedBytes,
-        memoryTotalBytes: hostHealth.memoryTotalBytes,
-        diskUsedBytes: hostHealth.diskUsedBytes,
-        diskTotalBytes: hostHealth.diskTotalBytes,
-        gpu: hostHealth.gpu,
-      },
-      status: overall,
-    };
     const lines = [
       'ICOS Runtime',
       `  Core: ${checks.core.status} (${checks.core.detail})`,
@@ -116,7 +51,7 @@ class HealthCommand implements SlashCommandHandler {
       '',
       `Status: ${overall}`,
     ];
-    return { kind: 'data', text: lines.join('\n'), data };
+    return { kind: 'data', text: lines.join('\n'), data: { ...report } };
   }
 }
 
