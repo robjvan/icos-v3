@@ -94,7 +94,12 @@ be resolved or cut. Resolution for M10:
 
 ---
 
-# [ ] M10a — RuVector Evaluation Spike
+# [x] M10a — RuVector Evaluation Spike (complete 2026-09-23)
+
+**Decision: RuVector as embedded library (`VectorDB` + `OnnxEmbedder`
+only — never `AgenticMemory`); associative surface bespoke HRR-lite
+in SQLite; container base must move alpine → glibc before M10b.**
+Evidence: `.reference/plans/evidence/milestone-10a-evidence-ruvector.md`.
 
 No RuVector code exists in the tree; the M4 plan names it only as
 the future substrate. Standing preference: **lean toward RuVector
@@ -135,7 +140,9 @@ degraded, declared, not silent.
 
 ---
 
-# [ ] M10b — Claim Model
+# [x] M10b — Claim Model (complete 2026-09-23)
+
+Evidence: `.reference/plans/evidence/milestone-10b-evidence-claim-model.md`.
 
 Define the belief record. Minimum fields:
 

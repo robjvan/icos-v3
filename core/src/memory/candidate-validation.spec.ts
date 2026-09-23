@@ -10,10 +10,12 @@ const good = {
   stability: 0.88,
 };
 
+const goodValidated = { ...good, sourceRole: 'unknown' as const };
+
 describe('validateCandidates', () => {
   it('accepts a well-formed candidate, trimming text', () => {
     expect(validateCandidates([{ ...good, subject: '  user  ' }])).toEqual([
-      { ...good, subject: 'user' },
+      { ...goodValidated, subject: 'user' },
     ]);
   });
 

@@ -2,7 +2,7 @@ import type { ChatMessage } from '../llm/llm.client';
 import type { MemoryExtractionInput } from './memory-candidate-extractor';
 
 /** Extraction definition version, recorded on every candidate. */
-export const EXTRACTION_VERSION = 'memory-extraction-v1';
+export const EXTRACTION_VERSION = 'memory-extraction-v2';
 
 /** How many prior messages accompany the turn for reference resolution. */
 export const EXTRACTION_CONTEXT_WINDOW = 6;
@@ -53,6 +53,7 @@ const RESPONSE_SCHEMA = `Return a JSON array. Each element must have exactly the
 - confidence: 0 to 1, how certain the statement was made (explicit statements score high, implications low)
 - importance: 0 to 1, how likely this matters in the future
 - stability: 0 to 1, how likely this stays true over time
+- source: "user" when mined from the user message, "assistant" when mined from the assistant response (omit when unclear)
 
 Return [] when nothing in the turn is worth retaining.
 Example: [{"kind":"preference","subject":"user","predicate":"prefers","object":"TypeScript","confidence":0.94,"importance":0.72,"stability":0.88}]`;

@@ -18,7 +18,9 @@ import {
 import { LlmMemoryCandidateExtractor } from '../memory/llm-memory-candidate-extractor';
 import { MemoryCandidateExtractor } from '../memory/memory-candidate-extractor';
 import { MemoryCandidateRepository } from '../memory/memory-candidate.repository';
+import { ClaimRepository } from '../memory/claim.repository';
 import { MemoryDatabaseService } from '../memory/memory-database.service';
+import { SqliteClaimRepository } from '../memory/sqlite-claim.repository';
 import { SqliteMemoryCandidateRepository } from '../memory/sqlite-memory-candidate.repository';
 import { SessionDatabaseService } from '../session/session-database.service';
 import { SessionRepository } from '../session/session.repository';
@@ -83,6 +85,10 @@ const toolExecutionServiceProvider = {
     {
       provide: MemoryCandidateRepository,
       useClass: SqliteMemoryCandidateRepository,
+    },
+    {
+      provide: ClaimRepository,
+      useClass: SqliteClaimRepository,
     },
     {
       provide: MemoryCandidateExtractor,

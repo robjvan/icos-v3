@@ -28,9 +28,11 @@ interface CandidateRow {
   extractor_model: string;
   extractor_version: string;
   extracted_at: string;
+  source_role: string;
 }
 
 function toCandidate(row: CandidateRow): MemoryCandidate {
+  const role = row.source_role;
   return {
     id: row.id,
     kind: row.kind as MemoryCandidate['kind'],
@@ -40,7 +42,12 @@ function toCandidate(row: CandidateRow): MemoryCandidate {
     confidence: row.confidence,
     importance: row.importance,
     stability: row.stability,
-    source: { sessionId: row.session_id, messageId: row.message_id },
+    sourceRole: role === 'user' || role === 'assistant' ? role : 'unknown',
+    source: {
+      sessionId: row.session_id,
+      messageId: row.message_id,
+      role: role === 'user' || role === 'assistant' ? role : 'unknown',
+    },
     extractorModel: row.extractor_model,
     extractorVersion: row.extractor_version,
     extractedAt: row.extracted_at,
@@ -66,8 +73,8 @@ export class SqliteMemoryCandidateRepository extends MemoryCandidateRepository {
       `INSERT INTO memory_candidates
          (id, session_id, message_id, kind, subject, predicate, object,
           confidence, importance, stability,
-          extractor_model, extractor_version, extracted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          extractor_model, extractor_version, extracted_at, source_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const saveAll = this.database.transaction(
       (items: NewMemoryCandidate[]): MemoryCandidate[] =>
@@ -87,6 +94,7 @@ export class SqliteMemoryCandidateRepository extends MemoryCandidateRepository {
             item.extractorModel,
             item.extractorVersion,
             extractedAt,
+            item.source.role,
           );
           return { ...item, id, extractedAt };
         }),
@@ -109,7 +117,7 @@ export class SqliteMemoryCandidateRepository extends MemoryCandidateRepository {
     const sql =
       `SELECT id, session_id, message_id, kind, subject, predicate, object,
               confidence, importance, stability,
-              extractor_model, extractor_version, extracted_at
+              extractor_model, extractor_version, extracted_at, source_role
          FROM memory_candidates` +
       (clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '') +
       ` ORDER BY rowid DESC LIMIT ?`;

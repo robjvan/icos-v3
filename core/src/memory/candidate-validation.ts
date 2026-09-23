@@ -1,5 +1,8 @@
 import { MEMORY_CANDIDATE_KINDS, ValidatedCandidate } from './memory-candidate';
-import type { MemoryCandidateKind } from './memory-candidate';
+import type {
+  CandidateSourceRole,
+  MemoryCandidateKind,
+} from './memory-candidate';
 
 const MAX_FIELD_LENGTH = 500;
 
@@ -26,6 +29,12 @@ function cleanKind(value: unknown): MemoryCandidateKind | null {
   return (MEMORY_CANDIDATE_KINDS as readonly string[]).includes(kind)
     ? (kind as MemoryCandidateKind)
     : null;
+}
+
+function cleanSourceRole(value: unknown): CandidateSourceRole {
+  if (typeof value !== 'string') return 'unknown';
+  const role = value.trim().toLowerCase();
+  return role === 'user' || role === 'assistant' ? role : 'unknown';
 }
 
 function validateOne(raw: unknown): ValidatedCandidate | null {
@@ -56,6 +65,7 @@ function validateOne(raw: unknown): ValidatedCandidate | null {
     confidence,
     importance,
     stability,
+    sourceRole: cleanSourceRole(raw.source),
   };
 }
 

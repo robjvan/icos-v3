@@ -303,7 +303,11 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
 
     extractor_model TEXT NOT NULL,
     extractor_version TEXT NOT NULL,
-    extracted_at TEXT NOT NULL
+    extracted_at TEXT NOT NULL,
+
+    -- M10b: which side of the turn the candidate was mined from.
+    -- Stamped at extraction; pre-stamp rows read 'unknown', never defaulted.
+    source_role TEXT NOT NULL DEFAULT 'unknown'
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_candidates_session
@@ -314,6 +318,63 @@ ON memory_candidates(message_id);
 
 CREATE INDEX IF NOT EXISTS idx_memory_candidates_kind
 ON memory_candidates(kind);
+
+/**
+ * M10b belief store. Claims reference ledger rows (evidence_json);
+ * they never edit them. Reserved columns (source_type, summary,
+ * related_json, access_count, last_accessed_at, activation, locked,
+ * emotional_json) exist so M11/M12 need no migration — each has one
+ * future owner, and M10 paths leave them at defaults.
+ */
+CREATE TABLE IF NOT EXISTS claims (
+    id TEXT PRIMARY KEY,
+
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    identity_key TEXT NOT NULL,
+
+    category TEXT NOT NULL
+        CHECK (category IN ('fact', 'preference', 'relationship', 'procedure')),
+    status TEXT NOT NULL
+        CHECK (status IN ('candidate', 'active', 'contradicted', 'retired')),
+
+    extractor_confidence REAL NOT NULL,
+    confidence REAL NOT NULL,
+
+    first_asserted_at TEXT NOT NULL,
+    last_surfaced_at TEXT NOT NULL,
+
+    origin TEXT NOT NULL CHECK (origin IN ('user', 'agent')),
+
+    source_type TEXT,
+    summary TEXT,
+
+    evidence_json TEXT NOT NULL,
+    related_json TEXT NOT NULL DEFAULT '[]',
+    entities_json TEXT NOT NULL DEFAULT '[]',
+
+    times_observed INTEGER NOT NULL DEFAULT 1,
+    access_count INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TEXT,
+    activation REAL,
+    locked INTEGER NOT NULL DEFAULT 0,
+    emotional_json TEXT,
+
+    promotion TEXT NOT NULL,
+
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_identity
+ON claims(identity_key);
+
+CREATE INDEX IF NOT EXISTS idx_claims_status
+ON claims(status);
+
+CREATE INDEX IF NOT EXISTS idx_claims_category
+ON claims(category);
 `;
 
 const SCHEMAS: Record<
@@ -342,7 +403,7 @@ const SCHEMAS: Record<
   },
   memories: {
     sql: MEMORIES_SCHEMA_SQL,
-    tables: ['memory_candidates'],
+    tables: ['memory_candidates', 'claims'],
     triggers: [],
   },
 };
@@ -393,6 +454,15 @@ function migrateColumns(db: Database.Database, schema: DatabaseSchema): void {
       'tool_requests',
       'transcript_state',
       `TEXT NOT NULL DEFAULT 'pending' CHECK (transcript_state IN ('pending', 'written'))`,
+    );
+  }
+  if (schema === 'memories') {
+    // M10b: live ledger files predate the origin stamp.
+    addColumnIfMissing(
+      db,
+      'memory_candidates',
+      'source_role',
+      `TEXT NOT NULL DEFAULT 'unknown'`,
     );
   }
 }

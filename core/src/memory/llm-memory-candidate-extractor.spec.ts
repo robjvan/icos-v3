@@ -70,7 +70,22 @@ describe('LlmMemoryCandidateExtractor', () => {
         confidence: 0.9,
         importance: 0.7,
         stability: 0.8,
+        sourceRole: 'unknown',
       },
+    ]);
+  });
+
+  it('stamps the extractor-reported side, defaulting to unknown', async () => {
+    const { extractor } = extractorWith(
+      '[{"kind":"preference","subject":"user","predicate":"prefers","object":"Tea","confidence":0.9,"importance":0.7,"stability":0.8,"source":"user"},' +
+        '{"kind":"fact","subject":"system","predicate":"runs_on","object":"Ollama","confidence":0.8,"importance":0.5,"stability":0.6,"source":"assistant"},' +
+        '{"kind":"fact","subject":"x","predicate":"y","object":"z","confidence":0.8,"importance":0.5,"stability":0.6,"source":"nobody"}]',
+    );
+    const candidates = await extractor.extract(input);
+    expect(candidates.map((c) => c.sourceRole)).toEqual([
+      'user',
+      'assistant',
+      'unknown',
     ]);
   });
 
@@ -117,6 +132,6 @@ describe('LlmMemoryCandidateExtractor', () => {
   });
 
   it('records the extraction version constant', () => {
-    expect(EXTRACTION_VERSION).toBe('memory-extraction-v1');
+    expect(EXTRACTION_VERSION).toBe('memory-extraction-v2');
   });
 });

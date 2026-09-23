@@ -114,7 +114,75 @@ describe('openDatabase', () => {
           name: string;
         }[]
       ).map((row) => row.name);
-      expect(names).toEqual(['memory_candidates']);
+      expect(names).toEqual(['memory_candidates', 'claims']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates pre-M10b memories files with claims table and role column', () => {
+    // Simulate a ledger file from before M10b: old candidates DDL
+    // without source_role, no claims table, one live row to preserve.
+    const path = join(dir, 'old-memories.sqlite');
+    const old = new Database(path);
+    try {
+      old.exec(`
+        CREATE TABLE memory_candidates (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            importance REAL NOT NULL,
+            stability REAL NOT NULL,
+            extractor_model TEXT NOT NULL,
+            extractor_version TEXT NOT NULL,
+            extracted_at TEXT NOT NULL
+        );`);
+      old
+        .prepare(
+          `INSERT INTO memory_candidates
+             (id, session_id, message_id, kind, subject, predicate, object,
+              confidence, importance, stability,
+              extractor_model, extractor_version, extracted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          'c1',
+          's1',
+          1,
+          'preference',
+          'user',
+          'prefers',
+          'teal',
+          0.9,
+          0.7,
+          0.8,
+          'mem',
+          'memory-extraction-v1',
+          '2026-01-03T00:00:00.000Z',
+        );
+    } finally {
+      old.close();
+    }
+
+    const db = openDatabase(path, 'memories');
+    try {
+      const tables = (
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      expect(tables).toEqual(
+        expect.arrayContaining(['memory_candidates', 'claims']),
+      );
+      const row = db
+        .prepare('SELECT source_role FROM memory_candidates WHERE id = ?')
+        .get('c1') as { source_role: string };
+      expect(row.source_role).toBe('unknown');
     } finally {
       db.close();
     }

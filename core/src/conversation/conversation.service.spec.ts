@@ -1753,6 +1753,7 @@ describe('ConversationService', () => {
       confidence: 0.94,
       importance: 0.72,
       stability: 0.88,
+      sourceRole: 'user',
     };
 
     it('persists validated candidates with provenance after a turn', async () => {
@@ -1776,9 +1777,9 @@ describe('ConversationService', () => {
       expect(saveCandidates.mock.calls[0][0]).toEqual([
         {
           ...preference,
-          source: { sessionId, messageId: 1 },
+          source: { sessionId, messageId: 1, role: 'user' },
           extractorModel: 'test-model',
-          extractorVersion: 'memory-extraction-v1',
+          extractorVersion: 'memory-extraction-v2',
         },
       ]);
     });

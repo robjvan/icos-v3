@@ -56,6 +56,7 @@ describe('Conversation (e2e)', () => {
         confidence: number;
         importance: number;
         stability: number;
+        sourceRole: 'user' | 'assistant' | 'unknown';
       }[]
     > => {
       if (extractFails) {
@@ -70,6 +71,7 @@ describe('Conversation (e2e)', () => {
           confidence: 0.9,
           importance: 0.7,
           stability: 0.8,
+          sourceRole: 'user',
         },
       ]);
     },

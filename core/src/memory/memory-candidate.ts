@@ -38,13 +38,23 @@ export interface ValidatedCandidate {
   confidence: number;
   importance: number;
   stability: number;
+  /**
+   * Which side of the turn the extractor mined this from, per its own
+   * report. 'unknown' is honest absence (old extractor versions omit
+   * it) — never a default for a known side.
+   */
+  sourceRole: CandidateSourceRole;
 }
+
+/** Which side of the turn a candidate was mined from. */
+export type CandidateSourceRole = 'user' | 'assistant' | 'unknown';
 
 /** A validated candidate plus the provenance and extraction metadata. */
 export interface NewMemoryCandidate extends ValidatedCandidate {
   source: {
     sessionId: string;
     messageId: number;
+    role: CandidateSourceRole;
   };
   extractorModel: string;
   extractorVersion: string;

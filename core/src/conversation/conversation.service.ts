@@ -1987,6 +1987,9 @@ export class ConversationService {
             source: {
               sessionId: input.sessionId,
               messageId: input.userMessageId,
+              // Old extractor versions predate the stamp; absence reads
+              // 'unknown', never invented.
+              role: candidate.sourceRole ?? 'unknown',
             },
             extractorModel: this.config.memoryLlmModel,
             extractorVersion: EXTRACTION_VERSION,
